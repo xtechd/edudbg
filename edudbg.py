@@ -4,10 +4,6 @@ import time
 import lief
 from ctypes import wintypes
 
-import win32api
-import win32con
-import win32process
-
 """ 
 NOTE :
 il faut utilisé cette commande de compile pour pouvoir avoir les symbole de l'adresse de debut du main pour break dessu direct.
@@ -20,7 +16,7 @@ CREATE_SUSPENDED = 0x00000004
 DEBUG_PROCESS = 0x00000001
 DBG_CONTINUE = 0x00010002
 EXCEPTION_DEBUG_EVENT = 1
-EXIT_PROCESS_DEBUG_EVENT = 5  
+EXIT_PROCESS_DEBUG_EVENT = 5
 EXCEPTION_SINGLE_STEP = 0x80000004
 
 PROCESS_QUERY_INFORMATION = 0x0400
@@ -43,6 +39,45 @@ DWORD = ctypes.c_uint32
 ULONG_PTR = ctypes.c_ulonglong
 HANDLE = LPVOID
 
+# Définir les structures nécessaires
+class PROCESS_BASIC_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("ExitStatus", ctypes.c_void_p),
+        ("PebBaseAddress", ctypes.c_uint64),
+        ("AffinityMask", ctypes.c_void_p),
+        ("BasePriority", ctypes.c_void_p),
+        ("UniqueProcessId", ctypes.c_void_p),
+        ("InheritedFromUniqueProcessId", ctypes.c_void_p),
+    ]
+
+
+class PEB(ctypes.Structure):
+    _fields_ = [
+        ("InheritedAddressSpace", ctypes.c_byte),
+        ("ReadImageFileExecOptions", ctypes.c_byte),
+        ("BeingDebugged", ctypes.c_byte),
+        ("BitField", ctypes.c_byte),
+        ("ImageUsesLargePages", ctypes.c_byte),
+        ("SpareBits", ctypes.c_byte),
+        ("Mutant", ctypes.c_void_p),
+        ("ImageBaseAddress", ctypes.c_void_p),
+        ("Ldr", ctypes.c_void_p),
+        ("ProcessParameters", ctypes.c_void_p),
+        ("SubSystemData", ctypes.c_void_p),
+        ("ProcessHeap", ctypes.c_void_p),
+        ("FastPebLock", ctypes.c_void_p),
+        ("AtlThunkSListPtr", ctypes.c_void_p),
+        ("IFEOKey", ctypes.c_void_p),
+        ("CrossProcessFlags", ctypes.c_uint32),
+        ("ProcessInJob", ctypes.c_byte),
+        ("ProcessInitializing", ctypes.c_byte),
+        ("ReservedBytes", ctypes.c_byte * 2),
+        ("KernelCallbackTable", ctypes.c_void_p),
+        ("UserSharedInfoPtr", ctypes.c_void_p),
+        ("SystemReserved", ctypes.c_uint32 * 1),
+        ("AtlThunkSListPtr32", ctypes.c_uint32),
+        ("ApiSetMap", ctypes.c_void_p),
+    ]
 
 class MODULEINFO(ctypes.Structure):
     _fields_ = [
@@ -141,30 +176,55 @@ class CONTEXT64(ctypes.Structure):
 # Load kernel32
 kernel32 = ctypes.windll.kernel32
 psapi = ctypes.WinDLL('psapi')
+ntdll = ctypes.WinDLL('ntdll.dll')
+
+# Définir les prototypes de fonction
+ntdll.NtQueryInformationProcess.argtypes = [
+    HANDLE,
+    ctypes.c_uint32,
+    LPVOID,
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_uint32),
+]
+ntdll.NtQueryInformationProcess.restype = ctypes.c_uint32
 
 def get_module_base_address(hProcess):
-    HMODULE_ARR_SIZE = 1024
-    HMODULE = wintypes.HMODULE
-    hMods = (HMODULE * HMODULE_ARR_SIZE)()
-    cbNeeded = wintypes.DWORD()
+    # Obtenir les informations de base du processus
+    pbi = PROCESS_BASIC_INFORMATION()
+    return_length = ctypes.c_uint32()
 
-    if not psapi.EnumProcessModulesEx(hProcess, hMods, ctypes.sizeof(hMods), ctypes.byref(cbNeeded), LIST_MODULES_ALL):
-        print("[!] EnumProcessModulesEx failed")
-        print(kernel32.GetLastError())
+    status = ntdll.NtQueryInformationProcess(
+        hProcess,
+        0,  # ProcessBasicInformation
+        ctypes.byref(pbi),
+        ctypes.sizeof(pbi),
+        ctypes.byref(return_length),
+    )
+
+    if status != 0:
+        print(f"[!] NtQueryInformationProcess failed with status: {status}")
         return None
 
-    if cbNeeded.value == 0:
-        print("[!] No modules found")
+    print(f"[DEBUG] PebBaseAddress: {pbi.PebBaseAddress:#x}")
+
+    # Lire la structure PEB
+    peb = PEB()
+    bytes_read = ctypes.c_size_t(0)
+
+    success = kernel32.ReadProcessMemory(
+        hProcess,
+        ctypes.c_void_p(pbi.PebBaseAddress),
+        ctypes.byref(peb),
+        ctypes.sizeof(peb),
+        ctypes.byref(bytes_read),
+    )
+
+    if not success:
+        print(f"[!] ReadProcessMemory failed. GetLastError: {kernel32.GetLastError()}")
         return None
 
-    hModule = hMods[0]
+    return peb.ImageBaseAddress
 
-    modInfo = MODULEINFO()
-    if not psapi.GetModuleInformation(hProcess, hModule, ctypes.byref(modInfo), ctypes.sizeof(modInfo)):
-        print("[!] GetModuleInformation failed")
-        return None
-
-    return modInfo.lpBaseOfDll
 
 def Start(path):
 
@@ -190,7 +250,7 @@ def Start(path):
     if not created:
         print(f"[!] CreateProcess failed: {ctypes.GetLastError()}")
         return 0
-    
+
     hProcess = kernel32.OpenProcess(PROCESS_ALL_ACCESS, False, process_info.dwProcessId)
     time.sleep(1)
     base_address = get_module_base_address(process_info.hProcess)
@@ -243,7 +303,7 @@ def debug_loop(process_info): #0x00007ff9ce5a63b2 addr sur la quel break
                     context.Dr2 = backup_Dr2
                     context.Dr3 = backup_Dr3
                     kernel32.SetThreadContext(thread_handle, ctypes.byref(context))
-                
+
                 if context.Rip == last_rip:
                     print(f"[!] RIP hasn't changed; breaking out of potential infinite loop.")
                     kernel32.ContinueDebugEvent(debug_event.dwProcessId, thread_id, DBG_CONTINUE)
@@ -333,7 +393,6 @@ def debug_loop(process_info): #0x00007ff9ce5a63b2 addr sur la quel break
         # Keep the debugger alive until exit is requested.
         kernel32.ContinueDebugEvent(debug_event.dwProcessId, thread_id, DBG_CONTINUE)
 
-
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         print(f"Usage: {sys.argv[0]} <path_to_exe>")
@@ -352,4 +411,3 @@ if __name__ == "__main__":
             print("[+] Got handle with PROCESS_VM_READ access")
             ps_info.hProcess = hProcess  # Remplace le handle dans process_info
     debug_loop(ps_info)
-    
