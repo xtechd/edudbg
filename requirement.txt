@@ -1,2 +1,4 @@
-lief
+capstone
 ctypes
+lief
+pefile

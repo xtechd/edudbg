@@ -1,7 +1,11 @@
 import ctypes
+import lief
+import pefile
 import sys
 import time
-import lief
+
+from capstone import *
+from capstone.x86 import *
 from ctypes import wintypes
 
 """ 
@@ -187,7 +191,58 @@ ntdll.NtQueryInformationProcess.argtypes = [
     ctypes.c_uint32,
     ctypes.POINTER(ctypes.c_uint32),
 ]
-ntdll.NtQueryInformationProcess.restype = ctypes.c_uint32
+        
+def disassemble_at(hProcess, lief_binary, pe, target, size=64):
+    # Si target est une fonction connue (ex: 'main')
+    if isinstance(target, str):
+        symbol_addr = None
+        for symbol in lief_binary.symbols:
+            if symbol.name == target:
+                symbol_addr = symbol.value + lief_binary.optional_header.imagebase if symbol.value < 0x10000 else symbol.value
+                break
+        if symbol_addr is None:
+            print(f"[!] Symbole '{target}' non trouvé.")
+            return
+        address = symbol_addr
+
+    # Sinon, on assume que c'est une adresse hexadécimale
+    else:
+        address = target
+
+    buffer = ctypes.create_string_buffer(size)
+    bytes_read = ctypes.c_size_t(0)
+
+    if not kernel32.ReadProcessMemory(hProcess, ctypes.c_void_p(address), buffer, size, ctypes.byref(bytes_read)):
+        print(f"[!] Échec de lecture mémoire à 0x{address:x}")
+        return
+
+    md = Cs(CS_ARCH_X86, CS_MODE_64)
+    md.detail = True
+
+    print(f"\n[+] Désassemblage à partir de 0x{address:x} ({'fonction: ' + target if isinstance(target, str) else 'adresse directe'}) :")
+    for instr in md.disasm(buffer.raw[:bytes_read.value], address):
+        print(f"0x{instr.address:x}:\t{instr.mnemonic}\t{instr.op_str}")
+        if instr.mnemonic == "ret":
+            break
+
+
+def get_real_address(path, hProcess, function_name):
+    binary = lief.parse(path)
+
+    for symbol in binary.symbols:
+        if symbol.name == function_name:
+            main_offset = symbol.value
+            break
+
+    text_section = next((s for s in binary.sections if s.name == ".text"), None)
+    text_offset = text_section.virtual_address
+    base_address = get_module_base_address(hProcess)
+
+    if base_address is None:
+        print("[!] Impossible de récupérer base address")
+        return None
+
+    return base_address + text_offset + main_offset
 
 def get_real_address(path, hProcess, function_name):
     binary = lief.parse(path)
@@ -308,7 +363,7 @@ def Start(path):
 
     return process_info, main_addr
 
-def debug_loop(process_info, main_addr):
+def debug_loop(process_info, file):
     debug_event = DEBUG_EVENT()
     context = CONTEXT64()
     context.ContextFlags = CONTEXT_CUSTOM
@@ -316,6 +371,8 @@ def debug_loop(process_info, main_addr):
     # Pour restaurer les breakpoints si besoin
     backup_Dr = [0, 0, 0, 0]
     backup_Dr7 = 0
+
+    exe = pefile.PE(file)
 
     last_rip = 0
     running = True
@@ -388,7 +445,25 @@ def debug_loop(process_info, main_addr):
                     elif user_input == "c":
                         paused = False
                         kernel32.ContinueDebugEvent(debug_event.dwProcessId, thread_id, DBG_CONTINUE)
+                    elif user_input.startswith("disas"):
+                        try:
+                            parts = user_input.split()
+                            if len(parts) == 2:
+                                arg = parts[1]
+                                pe_lief = lief.parse(file)
+                                pe_struct = pefile.PE(file)
 
+                                # Si arg est un nom (main, func, etc.)
+                                if arg.isidentifier():
+                                    disassemble_at(process_info.hProcess, pe_lief, pe_struct, get_real_address(file, process_info.hProcess, arg), 128)
+                                else:
+                                    addr = int(arg, 16)
+                                    disassemble_at(process_info.hProcess, pe_lief, pe_struct, addr, 128)
+                            else:
+                                print("[!] Usage : disas <fonction|adresse>")
+                        except Exception as e:
+                            print(f"[!] Erreur dans disas : {e}")
+                            
                     elif user_input == "b":
                         bp = int(input("[x] Enter breakpoint address (hex): "), 16)
 
@@ -408,9 +483,8 @@ def debug_loop(process_info, main_addr):
 
                     elif user_input == "q":
                         print("Exiting debugger.")
-                        paused = False
-                        running = False
-
+                        paused= False
+                        running = False  # Exit the debugger loop
             else:
                 print("[!] Failed to get thread context")
 
@@ -428,4 +502,4 @@ if __name__ == "__main__":
         sys.exit(1)
 
     ps_info, main_addr = Start(sys.argv[1])
-    debug_loop(ps_info, main_addr)
+    debug_loop(ps_info, sys.argv[1])
