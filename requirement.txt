@@ -1,2 +1,4 @@
 lief
 ctypes
+pefile
+capstone
