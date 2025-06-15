@@ -292,7 +292,7 @@ def get_module_base_address(hProcess):
         ctypes.sizeof(peb),
         ctypes.byref(bytes_read),
     )
-
+    
     if not success:
         print(f"[!] ReadProcessMemory failed. GetLastError: {kernel32.GetLastError()}")
         return None
@@ -363,7 +363,7 @@ def Start(path):
 
     return process_info, main_addr
 
-def debug_loop(process_info, file):
+def debug_loop(process_info, file, main_addr):
     debug_event = DEBUG_EVENT()
     context = CONTEXT64()
     context.ContextFlags = CONTEXT_CUSTOM
@@ -371,6 +371,7 @@ def debug_loop(process_info, file):
     # Pour restaurer les breakpoints si besoin
     backup_Dr = [0, 0, 0, 0]
     backup_Dr7 = 0
+    addr_hex = main_addr
 
     exe = pefile.PE(file)
 
@@ -425,7 +426,36 @@ def debug_loop(process_info, file):
                 while paused:
                     user_input = input("[x] Input 's' to step, 'c' to continue, 'b' to set breakpoint, 'st' for stack, 'q' to quit: ").strip()
 
-                    if user_input == "st":
+                    if user_input == "x":
+                        addr_str = input("[x] Entrez l'adresse mémoire à lire (ex: 0x7ff... ou juste hex) : ").strip()
+                        try:
+                            addr = int(addr_str, 16)
+                            num_lines = input("[x] Combien de lignes de 16 bytes ? (défaut: 4) : ").strip()
+                            num_lines = int(num_lines) if num_lines else 4
+
+                            for i in range(num_lines):
+                                read_addr = addr + (i * 16)
+                                buffer = ctypes.create_string_buffer(16)
+                                bytes_read = ctypes.c_size_t(0)
+ 
+                                if kernel32.ReadProcessMemory(process_info.hProcess, ctypes.c_void_p(read_addr), buffer, 16, ctypes.byref(bytes_read)):
+                                    hex_bytes = ' '.join(f'{b:02x}' for b in buffer.raw)
+                                    ascii_str = ''.join(chr(b) if 32 <= b < 127 else '.' for b in buffer.raw)
+                                    print(f"0x{read_addr:016x} | {hex_bytes:<48} | {ascii_str}")
+                                else:
+                                    print(f"[!] Failed to read memory at 0x{read_addr:x}")
+
+                        except ValueError:
+                            print("[!] Adresse invalide")
+
+                    elif user_input == "f":
+                        binary = lief.parse("main.exe")
+                        print("Fonctions trouvées dans le binaire :")
+                        for symbol in binary.symbols:
+                            if symbol.value != 0 and symbol.name:
+                                print(f"{symbol.name:<30} @ 0x{symbol.value:x}")
+
+                    elif user_input == "st":
                         for i in range(6):
                             buffer = ctypes.create_string_buffer(8)
                             bytes_read = ctypes.c_size_t(0)
@@ -502,4 +532,4 @@ if __name__ == "__main__":
         sys.exit(1)
 
     ps_info, main_addr = Start(sys.argv[1])
-    debug_loop(ps_info, sys.argv[1])
+    debug_loop(ps_info, sys.argv[1], main_addr)
