@@ -205,6 +205,7 @@ breakpoint_list = None
 bp_input = None
 hx_input = None
 hex_view = None
+function_view = None
 addr_str = None
 button_pressed = None
 button_lock = threading.Lock()
@@ -359,6 +360,26 @@ def update_registers():
     
     set_text_view(registers_view, reg_text)
 
+def get_user_functions(path):
+    functions = []
+    binary = lief.parse(path)
+
+    # Récupérer la section .text
+    text_section = binary.get_section(".text")
+    if not text_section:
+        append_to_console("[!] Section .text non trouvée.")
+        exit(1)
+
+    text_va = text_section.virtual_address
+    text_size = text_section.size
+    text_end = text_va + text_size
+
+    for sym in binary.symbols:
+        # On vérifie que c’est une fonction et qu’elle est bien dans .text
+        if text_va <= sym.value < text_end and (not sym.name.startswith(("_", "__", "@", ".", "??"))):
+            functions.append(sym.name)
+    return functions
+
 def update_stack():
     """Update the stack view"""
     if not current_context or not process_info:
@@ -493,6 +514,15 @@ def start_process(path):
 
         kernel32.ContinueDebugEvent(debug_event.dwProcessId, debug_event.dwThreadId, DBG_CONTINUE)
 
+    functions = get_user_functions(path)   
+
+    function_view.config(state="normal")
+
+    for func in functions:
+        function_view.insert("end", func + "\n")
+
+    function_view.config(state="disabled")
+
     return True, "Process initialized successfully"
 
 def debug_loop():
@@ -574,7 +604,7 @@ def debug_loop():
                             if kernel32.SetThreadContext(thread_handle, ctypes.byref(context)):
                                 is_paused = False
                                 kernel32.ContinueDebugEvent(debug_event.dwProcessId, thread_id, DBG_CONTINUE)
-                                
+                        
                         elif button == "continue":
                             append_to_console("[DEBUG] Processing continue command from GUI")
                             is_paused = False
@@ -694,12 +724,13 @@ def open_file():
 def create_gui():
     """Create the GUI with modern styled buttons"""
     global root, debug_console, registers_view, stack_view, memory_view
-    global breakpoint_list, bp_input, hx_input, hex_view
+    global breakpoint_list, bp_input, hx_input, hex_view, function_view
 
     root = tk.Tk()
     root.title("EduDbg - Simple PE Debugger")
     root.geometry("1280x720")
     root.state('zoomed') 
+    root.iconbitmap("./edudbg.ico")
 
     # Menu
     menubar = tk.Menu(root)
@@ -778,6 +809,11 @@ def create_gui():
     right_frame = tk.Frame(main_frame, width=475, bd=2, relief="sunken", bg="#1e1e1e")
     right_frame.pack(side="left", fill="y", padx=5, pady=8)
     right_frame.pack_propagate(False)
+
+    tk.Label(left_frame, text="Functions", font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e").pack(pady=(10, 0))
+    function_view = tk.Text(left_frame, height=22, state="disabled", font=("Courier New", 9),
+                        bg="#2d2d2d", fg="white", insertbackground="white")
+    function_view.pack(fill="y", expand=True, pady=(5, 2), padx=5)
 
     def styled_label(parent, text):
         return tk.Label(parent, text=text, font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e")
