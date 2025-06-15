@@ -700,6 +700,7 @@ def create_gui():
     root.title("EduDbg - Simple PE Debugger")
     root.geometry("1280x720")
     root.state('zoomed') 
+    root.iconbitmap("./edudbg.ico")
 
     # Menu
     menubar = tk.Menu(root)
