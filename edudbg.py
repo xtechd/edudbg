@@ -1,18 +1,13 @@
 import ctypes
 import lief
 import pefile
-import sys
 import time
-
+import tkinter as tk
+import threading
+from tkinter import filedialog, messagebox
 from capstone import *
 from capstone.x86 import *
 from ctypes import wintypes
-
-""" 
-NOTE :
-il faut utilisé cette commande de compile pour pouvoir avoir les symbole de l'adresse de debut du main pour break dessu direct.
-x86_64-w64-mingw32-gcc -g -O0 main.c -o main.exe
-"""
 
 # Constants
 CREATE_NEW_CONSOLE = 0x00000010
@@ -34,7 +29,7 @@ CONTEXT_CONTROL = 0x1
 CONTEXT_INTEGER = 0x3
 CONTEXT_DEBUG_REGISTERS = 0x10
 
-CONTEXT_CUSTOM = CONTEXT_AMD64 | CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_DEBUG_REGISTERS  # CONTEXT_CONTROL | CONTEXT_INTEGER
+CONTEXT_CUSTOM = CONTEXT_AMD64 | CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_DEBUG_REGISTERS
 CONTEXT_ALL = 0x0010003F
 
 # Windows types
@@ -43,7 +38,7 @@ DWORD = ctypes.c_uint32
 ULONG_PTR = ctypes.c_ulonglong
 HANDLE = LPVOID
 
-# Définir les structures nécessaires
+# Windows structures
 class PROCESS_BASIC_INFORMATION(ctypes.Structure):
     _fields_ = [
         ("ExitStatus", ctypes.c_void_p),
@@ -53,7 +48,6 @@ class PROCESS_BASIC_INFORMATION(ctypes.Structure):
         ("UniqueProcessId", ctypes.c_void_p),
         ("InheritedFromUniqueProcessId", ctypes.c_void_p),
     ]
-
 
 class PEB(ctypes.Structure):
     _fields_ = [
@@ -83,14 +77,6 @@ class PEB(ctypes.Structure):
         ("ApiSetMap", ctypes.c_void_p),
     ]
 
-class MODULEINFO(ctypes.Structure):
-    _fields_ = [
-        ("lpBaseOfDll", wintypes.LPVOID),
-        ("SizeOfImage", wintypes.DWORD),
-        ("EntryPoint", wintypes.LPVOID),
-    ]
-
-# Windows structures
 class STARTUPINFO(ctypes.Structure):
     _fields_ = [
         ("cb", DWORD),
@@ -126,10 +112,9 @@ class DEBUG_EVENT(ctypes.Structure):
         ("dwDebugEventCode", DWORD),
         ("dwProcessId", DWORD),
         ("dwThreadId", DWORD),
-        ("u", ctypes.c_byte * 1600),  # Size for EXCEPTION_DEBUG_INFO etc.
+        ("u", ctypes.c_byte * 1600),
     ]
 
-# 64-bit CONTEXT struct
 class CONTEXT64(ctypes.Structure):
     _fields_ = [
         ("P1Home", ULONG_PTR),
@@ -177,13 +162,12 @@ class CONTEXT64(ctypes.Structure):
         ("LastExceptionFromRip", ULONG_PTR),
     ]
 
-# Load kernel32
+# Load Windows DLLs
 kernel32 = ctypes.windll.kernel32
 psapi = ctypes.WinDLL('psapi')
 ntdll = ctypes.WinDLL('ntdll.dll')
-real_main_addr = 0
 
-# Définir les prototypes de fonction
+# Set function prototypes
 ntdll.NtQueryInformationProcess.argtypes = [
     HANDLE,
     ctypes.c_uint32,
@@ -191,117 +175,252 @@ ntdll.NtQueryInformationProcess.argtypes = [
     ctypes.c_uint32,
     ctypes.POINTER(ctypes.c_uint32),
 ]
-        
-def disassemble_at(hProcess, lief_binary, pe, target, size=64):
-    # Si target est une fonction connue (ex: 'main')
-    if isinstance(target, str):
-        symbol_addr = None
-        for symbol in lief_binary.symbols:
-            if symbol.name == target:
-                symbol_addr = symbol.value + lief_binary.optional_header.imagebase if symbol.value < 0x10000 else symbol.value
-                break
-        if symbol_addr is None:
-            print(f"[!] Symbole '{target}' non trouvé.")
-            return
-        address = symbol_addr
 
-    # Sinon, on assume que c'est une adresse hexadécimale
-    else:
-        address = target
+# Global variables
+current_file = None
+process_info = None
+is_running = False
+is_paused = False
+current_context = None
+current_thread_handle = None
+backup_Dr = [0, 0, 0, 0]
+backup_Dr7 = 0
+continue_event = None
+breakpoints = {}
+main_addr = 0
 
-    buffer = ctypes.create_string_buffer(size)
-    bytes_read = ctypes.c_size_t(0)
+# GUI widgets
+root = None
+debug_console = None
+registers_view = None
+stack_view = None
+memory_view = None
+breakpoint_list = None
+bp_input = None
+hx_input = None
+hex_view = None
+addr_str = None
+button_pressed = None
+button_lock = threading.Lock()
 
-    if not kernel32.ReadProcessMemory(hProcess, ctypes.c_void_p(address), buffer, size, ctypes.byref(bytes_read)):
-        print(f"[!] Échec de lecture mémoire à 0x{address:x}")
-        return
+def on_step_button():
+    """Modified step button handler"""
+    global button_pressed
+    with button_lock:
+        button_pressed = "step"
+    return True
 
-    md = Cs(CS_ARCH_X86, CS_MODE_64)
-    md.detail = True
+def on_continue_button():
+    """Modified continue button handler"""
+    global button_pressed
+    with button_lock:
+        button_pressed = "continue"
+    return True
 
-    print(f"\n[+] Désassemblage à partir de 0x{address:x} ({'fonction: ' + target if isinstance(target, str) else 'adresse directe'}) :")
-    for instr in md.disasm(buffer.raw[:bytes_read.value], address):
-        print(f"0x{instr.address:x}:\t{instr.mnemonic}\t{instr.op_str}")
-        if instr.mnemonic == "ret":
-            break
+def on_stop_button():
+    """Modified stop button handler"""
+    global button_pressed
+    with button_lock:
+        button_pressed = "stop"
+    return True
 
+def on_break_button():
+    """Modified stop button handler"""
+    global button_pressed
+    with button_lock:
+        button_pressed = "add_breakpoint"
+    return True
 
-def get_real_address(path, hProcess, function_name):
-    binary = lief.parse(path)
+def on_search_hex_button():
+    """Modified stop button handler"""
+    global button_pressed
+    with button_lock:
+        button_pressed = "search_hex"
+    return True
 
-    for symbol in binary.symbols:
-        if symbol.name == function_name:
-            main_offset = symbol.value
-            break
-
-    text_section = next((s for s in binary.sections if s.name == ".text"), None)
-    text_offset = text_section.virtual_address
-    base_address = get_module_base_address(hProcess)
-
-    if base_address is None:
-        print("[!] Impossible de récupérer base address")
-        return None
-
-    return base_address + text_offset + main_offset
-
-def get_real_address(path, hProcess, function_name):
-    binary = lief.parse(path)
-
-    for symbol in binary.symbols:
-        if symbol.name == function_name:
-            main_offset = symbol.value
-            break
-
-    text_section = next((s for s in binary.sections if s.name == ".text"), None)
-    text_offset = text_section.virtual_address
-    base_address = get_module_base_address(hProcess)
-
-    if base_address is None:
-        print("[!] Impossible de récupérer base address")
-        return None
-
-    return base_address + text_offset + main_offset
+def check_button_pressed():
+    """Check if any button was pressed"""
+    global button_pressed
+    with button_lock:
+        if button_pressed:
+            pressed = button_pressed
+            button_pressed = None
+            return pressed
+    return None
 
 def get_module_base_address(hProcess):
-    # Obtenir les informations de base du processus
+    """Get the base address of the main module"""
     pbi = PROCESS_BASIC_INFORMATION()
     return_length = ctypes.c_uint32()
 
     status = ntdll.NtQueryInformationProcess(
-        hProcess,
-        0,  # ProcessBasicInformation
-        ctypes.byref(pbi),
-        ctypes.sizeof(pbi),
-        ctypes.byref(return_length),
+        hProcess, 0, ctypes.byref(pbi), ctypes.sizeof(pbi), ctypes.byref(return_length)
     )
 
     if status != 0:
-        print(f"[!] NtQueryInformationProcess failed with status: {status}")
         return None
 
-    print(f"[DEBUG] PebBaseAddress: {pbi.PebBaseAddress:#x}")
-
-    # Lire la structure PEB
     peb = PEB()
     bytes_read = ctypes.c_size_t(0)
 
     success = kernel32.ReadProcessMemory(
-        hProcess,
-        ctypes.c_void_p(pbi.PebBaseAddress),
-        ctypes.byref(peb),
-        ctypes.sizeof(peb),
-        ctypes.byref(bytes_read),
+        hProcess, ctypes.c_void_p(pbi.PebBaseAddress), ctypes.byref(peb),
+        ctypes.sizeof(peb), ctypes.byref(bytes_read)
     )
 
     if not success:
-        print(f"[!] ReadProcessMemory failed. GetLastError: {kernel32.GetLastError()}")
         return None
 
     return peb.ImageBaseAddress
 
-def Start(path):
+def get_real_address(path, hProcess, function_name):
+    """Get the real address of a function in the loaded process"""
+    binary = lief.parse(path)
+    main_offset = 0
+
+    for symbol in binary.symbols:
+        if symbol.name == function_name:
+            main_offset = symbol.value
+            break
+
+    text_section = next((s for s in binary.sections if s.name == ".text"), None)
+    if not text_section:
+        return None
+        
+    text_offset = text_section.virtual_address
+    base_address = get_module_base_address(hProcess)
+
+    if base_address is None:
+        return None
+
+    return base_address + text_offset + main_offset
+
+def disassemble_at(hProcess, address, size=64):
+    """Disassemble code at a given address"""
+    buffer = ctypes.create_string_buffer(size)
+    bytes_read = ctypes.c_size_t(0)
+
+    if not kernel32.ReadProcessMemory(hProcess, ctypes.c_void_p(address), buffer, size, ctypes.byref(bytes_read)):
+        return [f"Failed to read memory at 0x{address:x}"]
+
+    md = Cs(CS_ARCH_X86, CS_MODE_64)
+    md.detail = True
+
+    instructions = []
+    for instr in md.disasm(buffer.raw[:bytes_read.value], address):
+        instructions.append(f"0x{instr.address:x}\t{instr.mnemonic}\t{instr.op_str}")
+        if instr.mnemonic == "ret":
+            break
+    
+    return instructions
+
+def append_to_console(text):
+    """Add text to the debug console"""
+    debug_console.config(state="normal")
+    debug_console.insert("end", text + "\n")
+    debug_console.see("end")
+    debug_console.config(state="disabled")
+
+def set_text_view(widget, text):
+    """Set text in a text widget"""
+    widget.config(state="normal")
+    widget.delete(1.0, "end")
+    widget.insert("end", text)
+    widget.config(state="disabled")
+
+def update_registers():
+    """Update the registers view"""
+    if not current_context:
+        return
+    
+    reg_text = f"RAX: {current_context.Rax:#018x}\n"
+    reg_text += f"RBX: {current_context.Rbx:#018x}\n"
+    reg_text += f"RCX: {current_context.Rcx:#018x}\n"
+    reg_text += f"RDX: {current_context.Rdx:#018x}\n"
+    reg_text += f"RSI: {current_context.Rsi:#018x}\n"
+    reg_text += f"RDI: {current_context.Rdi:#018x}\n"
+    reg_text += f"RIP: {current_context.Rip:#018x}\n"
+    reg_text += f"RSP: {current_context.Rsp:#018x}\n"
+    reg_text += f"RBP: {current_context.Rbp:#018x}\n"
+    reg_text += f"R8 :  {current_context.R8:#018x}\n"
+    reg_text += f"R9 :  {current_context.R9:#018x}\n"
+    reg_text += f"R10: {current_context.R10:#018x}\n"
+    reg_text += f"R11: {current_context.R11:#018x}\n"
+    reg_text += f"R12: {current_context.R12:#018x}\n"
+    reg_text += f"R13: {current_context.R13:#018x}\n"
+    reg_text += f"R14: {current_context.R14:#018x}\n"
+    reg_text += f"R15: {current_context.R15:#018x}\n"
+    
+    set_text_view(registers_view, reg_text)
+
+def update_stack():
+    """Update the stack view"""
+    if not current_context or not process_info:
+        return
+    
+    stack_text = ""
+    for i in range(10):
+        buffer = ctypes.create_string_buffer(8)
+        bytes_read = ctypes.c_size_t(0)
+        addr = current_context.Rsp + (i * 8)
+        if kernel32.ReadProcessMemory(process_info.hProcess, ctypes.c_void_p(addr), buffer, 8, ctypes.byref(bytes_read)):
+            val = int.from_bytes(buffer.raw, 'little')
+            stack_text += f"0x{addr:018x} | {val:#018x}\n"
+        else:
+            stack_text += f"0x{addr:018x} | [Read Error]\n"
+    
+    set_text_view(stack_view, stack_text)
+
+def update_hex(addr):
+    """Update the stack view"""
+    if not current_context or not process_info:
+        return
+    
+    try:
+        num_lines = 16  # Show more lines in dedicated hex view
+        
+        # Clear the hex view and prepare for new content
+        hex_view.config(state="normal")
+        hex_view.delete(1.0, "end")
+        
+        hex_output = ""
+        for i in range(num_lines):
+            read_addr = addr + (i * 16)
+            buffer = ctypes.create_string_buffer(16)
+            bytes_read = ctypes.c_size_t(0)
+
+            if kernel32.ReadProcessMemory(process_info.hProcess, ctypes.c_void_p(read_addr), buffer, 16, ctypes.byref(bytes_read)):
+                hex_bytes = ' '.join(f'{b:02x}' for b in buffer.raw)
+                ascii_str = ''.join(chr(b) if 32 <= b < 127 else '.' for b in buffer.raw)
+                hex_output += f"0x{read_addr:016x} | {hex_bytes:<48} | {ascii_str}\n"
+            else:
+                hex_output += f"0x{read_addr:016x} | [Read Error]\n"
+        
+        # Display in hex_view instead of console
+        hex_view.insert("end", hex_output)
+        hex_view.config(state="disabled")
+        
+        append_to_console(f"[+] Hex dump displayed for address 0x{addr:x}")
+    
+    except ValueError:
+        append_to_console("[!] Adresse invalide")
+
+def update_disassembly():
+    """Update the disassembly view"""
+    if not current_context or not process_info:
+        return
+    
+    instructions = disassemble_at(process_info.hProcess, current_context.Rip, 128)
+    disasm_text = "\n".join(instructions)
+    set_text_view(memory_view, disasm_text)
+
+def start_process(path):
+    """Start the process in suspended mode and continue until main breakpoint"""
+    global process_info, current_file, main_addr, addr_str
+    
+    current_file = path
     startupinfo = STARTUPINFO()
-    process_info = PROCESS_INFORMATION()
+    proc_info = PROCESS_INFORMATION()
     startupinfo.cb = ctypes.sizeof(startupinfo)
 
     created = kernel32.CreateProcessW(
@@ -309,16 +428,19 @@ def Start(path):
         DEBUG_PROCESS | CREATE_SUSPENDED | CREATE_NEW_CONSOLE,
         None, None,
         ctypes.byref(startupinfo),
-        ctypes.byref(process_info)
+        ctypes.byref(proc_info)
     )
 
     if not created:
-        print(f"[!] CreateProcess failed: {ctypes.GetLastError()}")
-        return 0
+        error_msg = f"CreateProcess failed: {ctypes.GetLastError()}"
+        append_to_console(f"[!] {error_msg}")
+        return False, error_msg
+
+    process_info = proc_info
 
     # Obtenir l'adresse réelle de main
     main_addr = get_real_address(path, process_info.hProcess, "main")
-    print(f"[!] Adresse de main : {main_addr:#018x}")
+    append_to_console(f"[!] Adresse de main : {main_addr:#018x}")
 
     # Mettre breakpoint hardware sur le thread principal (AVANT resume)
     context = CONTEXT64()
@@ -328,15 +450,17 @@ def Start(path):
         context.Dr0 = main_addr
         context.Dr7 |= 0x1  # Active le breakpoint sur Dr0
         if not kernel32.SetThreadContext(process_info.hThread, ctypes.byref(context)):
-            print("[!] SetThreadContext failed")
+            append_to_console("[!] SetThreadContext failed")
+        else:
+            breakpoints[main_addr] = True
     else:
-        print("[!] GetThreadContext failed")
+        append_to_console("[!] GetThreadContext failed")
 
     # Maintenant seulement on relance le thread principal
     kernel32.ResumeThread(process_info.hThread)
 
-    print(f"[+] Started process {path} with PID {process_info.dwProcessId}")
-    print("[*] Waiting for breakpoint to hit main...")
+    append_to_console(f"[+] Started process {path} with PID {process_info.dwProcessId}")
+    append_to_console("[*] Waiting for breakpoint to hit main...")
 
     # Continue automatiquement jusqu'à ce que le breakpoint sur main soit atteint
     while True:
@@ -351,7 +475,9 @@ def Start(path):
                 context.ContextFlags = CONTEXT_CUSTOM
                 if kernel32.GetThreadContext(thread_handle, ctypes.byref(context)):
                     if context.Dr6 & 0x1:  # Breakpoint Dr0 hit
-                        print(f"[+] Breakpoint hit at main: RIP={context.Rip:#018x}")
+                        append_to_console(f"[+] Breakpoint hit at main: RIP={context.Rip:#018x}")
+                        addr_str=context.Rip
+                        update_hex(addr_str)
                         context.Dr6 = 0  # Clear debug status register
                         kernel32.SetThreadContext(thread_handle, ctypes.byref(context))
                         kernel32.CloseHandle(thread_handle)
@@ -361,9 +487,16 @@ def Start(path):
 
         kernel32.ContinueDebugEvent(debug_event.dwProcessId, debug_event.dwThreadId, DBG_CONTINUE)
 
-    return process_info, main_addr
+    return True, "Process initialized successfully"
 
-def debug_loop(process_info, file):
+def debug_loop():
+    """Main debug loop with GUI button detection"""
+    global is_running, is_paused, current_context, current_thread_handle
+    global backup_Dr, backup_Dr7, continue_event, addr_str
+    
+    if not process_info:
+        return
+
     debug_event = DEBUG_EVENT()
     context = CONTEXT64()
     context.ContextFlags = CONTEXT_CUSTOM
@@ -372,13 +505,12 @@ def debug_loop(process_info, file):
     backup_Dr = [0, 0, 0, 0]
     backup_Dr7 = 0
 
-    exe = pefile.PE(file)
-
+    exe = pefile.PE(current_file)
     last_rip = 0
     running = True
 
-    while running:
-        if not kernel32.WaitForDebugEvent(ctypes.byref(debug_event), 1000):
+    while running and is_running:
+        if not kernel32.WaitForDebugEvent(ctypes.byref(debug_event), 100):
             continue
 
         code = debug_event.dwDebugEventCode
@@ -387,15 +519,19 @@ def debug_loop(process_info, file):
         if code == EXCEPTION_DEBUG_EVENT:
             thread_handle = kernel32.OpenThread(0x1F03FF, False, thread_id)
             if not thread_handle:
-                print(f"[!] Failed to open thread {thread_id}")
+                append_to_console(f"[!] Failed to open thread {thread_id}")
                 break
 
+            current_thread_handle = thread_handle
             context.ContextFlags = CONTEXT_CUSTOM
+            
             if kernel32.GetThreadContext(thread_handle, ctypes.byref(context)):
+                current_context = context
 
                 if context.Dr6 & 0x0F:
                     # Clear Dr6 and disable breakpoints temporarily
                     context.Dr6 = 0
+                    temp_Dr7 = context.Dr7
                     context.Dr7 = 0
                     kernel32.SetThreadContext(thread_handle, ctypes.byref(context))
                 else:
@@ -405,101 +541,266 @@ def debug_loop(process_info, file):
                     kernel32.SetThreadContext(thread_handle, ctypes.byref(context))
 
                 if context.Rip == last_rip:
-                    print(f"[!] RIP hasn't changed; breaking out of potential infinite loop.")
+                    append_to_console(f"[!] RIP hasn't changed; breaking out of potential infinite loop.")
                     kernel32.ContinueDebugEvent(debug_event.dwProcessId, thread_id, DBG_CONTINUE)
                     kernel32.CloseHandle(thread_handle)
                     continue
                 last_rip = context.Rip
 
-                print(f"\n[+] Exception in Thread {thread_id}")
-                print("rax={0:#018x} rbx={1:#018x} rcx={2:#018x}".format(context.Rax, context.Rbx, context.Rcx))
-                print("rdx={0:#018x} rsi={1:#018x} rdi={2:#018x}".format(context.Rdx, context.Rsi, context.Rdi))
-                print("rip={0:#018x} rsp={1:#018x} rbp={2:#018x}".format(context.Rip, context.Rsp, context.Rbp))
-                print("r8={0:#018x}  r9={1:#018x} r10={2:#018x}".format(context.R8, context.R9, context.R10))
-                print("r11={0:#018x} r12={1:#018x} r13={2:#018x}".format(context.R11, context.R12, context.R13))
-                print("r14={0:#018x} r15={1:#018x} eflags={2:#010x}".format(context.R14, context.R15, context.EFlags))
-                print("Dr0={0:#018x} Dr1={1:#018x} Dr2={2:#018x} Dr3={3:#018x}".format(context.Dr0, context.Dr1, context.Dr2, context.Dr3))
-                print(f"[+] Instruction size: Check for multi-byte instruction at RIP={context.Rip:#018x}")
+                # Update GUI
+                update_registers()
+                update_stack()
+                update_disassembly()
+                update_hex(addr_str)
 
-                paused = True
-                while paused:
-                    user_input = input("[x] Input 's' to step, 'c' to continue, 'b' to set breakpoint, 'st' for stack, 'q' to quit: ").strip()
-
-                    if user_input == "st":
-                        for i in range(6):
-                            buffer = ctypes.create_string_buffer(8)
-                            bytes_read = ctypes.c_size_t(0)
-                            addr = context.Rsp + (i * 8)
-                            if kernel32.ReadProcessMemory(process_info.hProcess, ctypes.c_void_p(addr), buffer, 8, ctypes.byref(bytes_read)):
-                                val = int.from_bytes(buffer.raw, 'little')
-                                print(f"0x{addr:018x} | {val:#018x}")
-                            else:
-                                print(f"[!] Failed to read memory at 0x{addr:x}")
-
-                    elif user_input == "s":
-                        context.EFlags |= 0x100  # Trap flag
-                        if kernel32.SetThreadContext(thread_handle, ctypes.byref(context)):
-                            paused = False
+                is_paused = True
+                continue_event.clear()
+                
+                while is_paused and is_running:
+                    # Check for GUI button presses while waiting
+                    button = check_button_pressed()
+                    if button:
+                        append_to_console(f"[GUI] {button.upper()} button pressed")
+                        
+                        if button == "step":
+                            append_to_console("[DEBUG] Processing step command from GUI")
+                            context.EFlags |= 0x100  # Trap flag
+                            if kernel32.SetThreadContext(thread_handle, ctypes.byref(context)):
+                                is_paused = False
+                                kernel32.ContinueDebugEvent(debug_event.dwProcessId, thread_id, DBG_CONTINUE)
+                                
+                        elif button == "continue":
+                            append_to_console("[DEBUG] Processing continue command from GUI")
+                            is_paused = False
                             kernel32.ContinueDebugEvent(debug_event.dwProcessId, thread_id, DBG_CONTINUE)
-
-                    elif user_input == "c":
-                        paused = False
-                        kernel32.ContinueDebugEvent(debug_event.dwProcessId, thread_id, DBG_CONTINUE)
-                    elif user_input.startswith("disas"):
-                        try:
-                            parts = user_input.split()
-                            if len(parts) == 2:
-                                arg = parts[1]
-                                pe_lief = lief.parse(file)
-                                pe_struct = pefile.PE(file)
-
-                                # Si arg est un nom (main, func, etc.)
-                                if arg.isidentifier():
-                                    disassemble_at(process_info.hProcess, pe_lief, pe_struct, get_real_address(file, process_info.hProcess, arg), 128)
-                                else:
-                                    addr = int(arg, 16)
-                                    disassemble_at(process_info.hProcess, pe_lief, pe_struct, addr, 128)
-                            else:
-                                print("[!] Usage : disas <fonction|adresse>")
-                        except Exception as e:
-                            print(f"[!] Erreur dans disas : {e}")
                             
-                    elif user_input == "b":
-                        bp = int(input("[x] Enter breakpoint address (hex): "), 16)
+                        elif button == "stop":
+                            append_to_console("[DEBUG] Processing stop command from GUI")
+                            is_paused = False
+                            running = False
 
-                        for i in range(4):
-                            if getattr(context, f"Dr{i}") == 0:
-                                setattr(context, f"Dr{i}", bp)
-                                context.Dr7 |= (1 << (i * 2))
-                                backup_Dr[i] = bp
-                                backup_Dr7 = context.Dr7
-                                if kernel32.SetThreadContext(thread_handle, ctypes.byref(context)):
-                                    print(f"[+] Breakpoint set at {bp:#018x} in Dr{i}")
+                        elif button == "search_hex":
+                            addr_str = int(hx_input.get().strip(), 16)
+                            update_hex(addr_str)
+
+                        elif button == "add_breakpoint":
+                            append_to_console("[DEBUG] Adding Breakpoint")
+                            
+                            # Récupérer la valeur saisie dans bp_input
+                            bp_address_str = bp_input.get().strip()
+                            
+                            if not bp_address_str:
+                                append_to_console("[!] Please enter a breakpoint address")
+                                return
+                            
+                            try:
+                                # Convertir l'adresse (supporte hex avec ou sans 0x, et décimal)
+                                if bp_address_str.startswith('0x') or bp_address_str.startswith('0X'):
+                                    bp = int(bp_address_str, 16)
+                                elif bp_address_str.isdigit():
+                                    bp = int(bp_address_str)
                                 else:
-                                    print("[!] Failed to set context with new breakpoint.")
-                                break
-                        else:
-                            print("[!] All hardware breakpoints are in use (max 4).")
+                                    # Essayer en hex sans préfixe
+                                    bp = int(bp_address_str, 16)
+                                    
+                                for i in range(4):
+                                    if getattr(context, f"Dr{i}") == 0:
+                                        setattr(context, f"Dr{i}", bp)
+                                        context.Dr7 |= (1 << (i * 2))
+                                        backup_Dr[i] = bp
+                                        backup_Dr7 = context.Dr7
+                                        if kernel32.SetThreadContext(thread_handle, ctypes.byref(context)):
+                                            append_to_console(f"[+] Breakpoint set at {bp:#018x} in Dr{i}")
+                                            # Ajouter le breakpoint à la liste visuelle
+                                            breakpoint_list.insert(tk.END, f"Dr{i}: {bp:#018x}")
+                                            # Vider le champ input après ajout réussi
+                                            bp_input.delete(0, tk.END)
+                                        else:
+                                            append_to_console("[!] Failed to set context with new breakpoint.")
+                                        break
+                                else:
+                                    append_to_console("[!] All hardware breakpoints are in use (max 4).")
+                                    
+                            except ValueError:
+                                append_to_console(f"[!] Invalid address format: '{bp_address_str}'. Use hex (0x1000 or 1000) or decimal.")
+                                
+                        elif button == "stack":
+                            append_to_console("[DEBUG] Showing stack")
+                            for i in range(6):
+                                buffer = ctypes.create_string_buffer(8)
+                                bytes_read = ctypes.c_size_t(0)
+                                addr = context.Rsp + (i * 8)
+                                if kernel32.ReadProcessMemory(process_info.hProcess, ctypes.c_void_p(addr), buffer, 8, ctypes.byref(bytes_read)):
+                                    val = int.from_bytes(buffer.raw, 'little')
+                                    append_to_console(f"0x{addr:018x} | {val:#018x}")
+                                else:
+                                    append_to_console(f"[!] Failed to read memory at 0x{addr:x}")
 
-                    elif user_input == "q":
-                        print("Exiting debugger.")
-                        paused= False
-                        running = False  # Exit the debugger loop
+                    if continue_event.wait(timeout=0.1):
+                        break
+
             else:
-                print("[!] Failed to get thread context")
+                append_to_console("[!] Failed to get thread context")
 
             kernel32.CloseHandle(thread_handle)
 
         elif code == EXIT_PROCESS_DEBUG_EVENT:
-            print(f"\n[+] Process {debug_event.dwProcessId} has exited.")
+            append_to_console(f"\n[+] Process {debug_event.dwProcessId} has exited.")
             running = False
+            is_running = False
 
-        kernel32.ContinueDebugEvent(debug_event.dwProcessId, thread_id, DBG_CONTINUE)
+        if running and is_running:
+            kernel32.ContinueDebugEvent(debug_event.dwProcessId, thread_id, DBG_CONTINUE)
+    
+    # Cleanup
+    if current_thread_handle:
+        kernel32.CloseHandle(current_thread_handle)
+        current_thread_handle = None
+
+
+def open_file():
+    """Open file dialog and start debugging"""
+    global continue_event
+    
+    file_path = filedialog.askopenfilename(
+        title="Select PE file",
+        filetypes=[("Executable files", "*.exe"), ("All files", "*.*")]
+    )
+    if file_path:
+        append_to_console(f"[INFO] File selected: {file_path}")
+        
+        continue_event = threading.Event()
+        
+        def start_debug_thread():
+            global is_running
+            is_running = True
+            success, message = start_process(file_path)
+            if success:
+                append_to_console(f"[SUCCESS] {message}")
+                debug_loop()
+            else:
+                append_to_console(f"[ERROR] {message}")
+                is_running = False
+        
+        debug_thread = threading.Thread(target=start_debug_thread, daemon=True)
+        debug_thread.start()
+
+def create_gui():
+    """Create the GUI with modern styled buttons"""
+    global root, debug_console, registers_view, stack_view, memory_view
+    global breakpoint_list, bp_input, hx_input, hex_view
+
+    root = tk.Tk()
+    root.title("EduDbg - Simple PE Debugger")
+    root.geometry("1280x720")
+    root.state('zoomed') 
+
+    # Menu
+    menubar = tk.Menu(root)
+    file_menu = tk.Menu(menubar, tearoff=0)
+    file_menu.add_command(label="Open file...", command=open_file)
+    file_menu.add_command(label="Quit", command=root.quit)
+    menubar.add_cascade(label="File", menu=file_menu)
+
+    debug_menu = tk.Menu(menubar, tearoff=0)
+    debug_menu.add_command(label="Step", command=on_step_button)
+    debug_menu.add_command(label="Continue", command=on_continue_button)
+    debug_menu.add_command(label="Stop", command=on_stop_button)
+    debug_menu.add_command(label="Add Breakpoint", command=on_break_button)
+    menubar.add_cascade(label="Debug", menu=debug_menu)
+
+    root.config(menu=menubar)
+
+    # Beautiful buttons
+    def styled_button(parent, text, color, command):
+        return tk.Button(
+            parent, text=text, command=command,
+            bg=color, fg="white", activebackground="#222222", activeforeground="white",
+            font=("Segoe UI", 9, "bold"), bd=0, relief="ridge", padx=10, pady=5
+        )
+
+    # Main frame
+    main_frame = tk.Frame(root, bg="#2e2e2e")
+    main_frame.pack(fill="both", expand=True)
+
+    # Left panel
+    left_frame = tk.Frame(main_frame, width=250, bd=2, relief="sunken", bg="#1e1e1e")
+    left_frame.pack(side="left", fill="y", padx=5, pady=5)
+    left_frame.pack_propagate(False)
+
+    tk.Label(left_frame, text="Breakpoints", font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e").pack(pady=(5, 0))
+    breakpoint_list = tk.Listbox(left_frame, height=8, bg="#2d2d2d", fg="white", selectbackground="#2d2d2d", relief="flat")
+    breakpoint_list.pack(fill="x", pady=5, padx=5)
+
+    bp_frame = tk.Frame(left_frame, bg="#1e1e1e")
+    bp_frame.pack(fill="x", pady=5, padx=5)
+    bp_input = tk.Entry(bp_frame, bg="#2d2d2d", fg="white", relief="flat")
+    bp_input.pack(side="left", fill="x", expand=True, padx=(0, 5))
+
+    styled_button(bp_frame, "Add", "#650000", on_break_button).pack(side='right')
+
+    tk.Label(left_frame, text="Debug Controls", font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e").pack(pady=(10, 5))
+
+    control_frame = tk.Frame(left_frame, bg="#1e1e1e")
+    control_frame.pack(fill="x", padx=5)
+
+    styled_button(control_frame, "Step", "#1b699d", on_step_button).pack(fill="x", pady=3)
+    styled_button(control_frame, "Continue", "#1c904c", on_continue_button).pack(fill="x", pady=3)
+    styled_button(control_frame, "Stop", "#b02010", on_stop_button).pack(fill="x", pady=3)
+
+    # Center panel - Disassembly
+    center_frame = tk.Frame(main_frame, bd=2, relief="sunken", bg="#1e1e1e")
+    center_frame.pack(side="left", fill="both", expand=True, padx=5, pady=5)
+
+    tk.Label(center_frame, text="Disassembly", font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e").pack(pady=(10, 0))
+    memory_view = tk.Text(center_frame, height=22, state="disabled", font=("Courier New", 9),
+                        bg="#2d2d2d", fg="white", insertbackground="white")
+    memory_view.pack(fill="both", expand=True, pady=(5, 2), padx=5)
+
+    tk.Label(center_frame, text="HexView", font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e").pack(pady=(5, 0))
+    hex_view = tk.Text(center_frame, height=15, state="disabled", font=("Courier New", 9),
+                    bg="#2d2d2d", fg="white", insertbackground="white")
+    hex_view.pack(fill="both", expand=True, pady=(2, 10), padx=5)
+
+    styled_button(center_frame, "Search", "#6d6d6d", on_search_hex_button).pack(fill="x", side='right')
+    hx_frame = tk.Frame(center_frame, bg="#1e1e1e")
+    hx_frame.pack(fill="x", pady=5, padx=5)
+    hx_input = tk.Entry(hx_frame, bg="#2d2d2d", fg="white", relief="flat")
+    hx_input.pack(side="bottom", fill='x', expand=True, padx=(0, 5))
+
+    # Right panel
+    right_frame = tk.Frame(main_frame, width=475, bd=2, relief="sunken", bg="#1e1e1e")
+    right_frame.pack(side="left", fill="y", padx=5, pady=8)
+    right_frame.pack_propagate(False)
+
+    def styled_label(parent, text):
+        return tk.Label(parent, text=text, font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e")
+
+    styled_label(right_frame, "Registers").pack(pady=(10, 0))
+    registers_view = tk.Text(right_frame, height=10, width=60, state="disabled", font=("Courier New", 9), bg="#2d2d2d", fg="white", insertbackground="white")
+    registers_view.pack(fill="x", pady=5)
+
+    styled_label(right_frame, "Stack").pack(pady=(10, 0))
+    stack_view = tk.Text(right_frame, height=10, width=60, state="disabled", font=("Courier New", 9), bg="#2d2d2d", fg="white", insertbackground="white")
+    stack_view.pack(fill="x", pady=5)
+
+    # Label pour la console debug
+    styled_label(right_frame, "Debug Console").pack(pady=(10, 0))
+
+    # Frame pour la console et scrollbar - prend tout l'espace restant
+    console_frame = tk.Frame(right_frame, bg="#1e1e1e")
+    console_frame.pack(fill="both", expand=True, pady=(2, 5))
+
+    debug_console = tk.Text(console_frame, width=60, state="disabled",
+                            font=("Courier New", 9), bg="#2d2d2d", fg="white", insertbackground="white")
+    debug_console.pack(fill="both", expand=True)
+
+    append_to_console("[INFO] EduDbg initialized - Load a PE file to start debugging")
+
+def main():
+    """Main function"""
+    create_gui()
+    root.mainloop()
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print(f"Usage: {sys.argv[0]} <path_to_exe>")
-        sys.exit(1)
-
-    ps_info, main_addr = Start(sys.argv[1])
-    debug_loop(ps_info, sys.argv[1])
+    main()

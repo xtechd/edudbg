@@ -1,4 +1,4 @@
 capstone
-ctypes
 lief
 pefile
+dearpygui
