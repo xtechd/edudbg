@@ -1,3 +1,5 @@
+![edudbg](https://github.com/user-attachments/assets/c791ff98-c91d-495b-8af1-477bc9cc6f1c)
+
 # Getting Started
 
 Welcome to the documentation for your Windows Debugger. This tool allows you to debug specific compiled executables at the instruction level using a clean and simple user interface.
