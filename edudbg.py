@@ -211,39 +211,6 @@ button_pressed = None
 button_lock = threading.Lock()
 selected_label = None
 
-def on_double_click(event):
-    global selected_label
-    label = event.widget
-
-    # Réinitialiser l'ancien label s'il y en a un
-    if selected_label and selected_label != event.widget:
-        selected_label.config(bg="#1e1e1e")
-
-    # Appliquer la nouvelle sélection
-    selected_label = event.widget
-    selected_label.config(bg="#333366")
-
-    function_window = tk.Toplevel(root)
-    function_window.title("EduDbg - Simple PE Debugger")
-    function_window.geometry("720x480")
-    function_window.iconbitmap("./edudbg.ico")
-
-    main_frame = tk.Frame(function_window, bg="#2e2e2e")
-    main_frame.pack(fill="both", expand=True)
-
-    center_frame = tk.Frame(main_frame, bd=2, relief="sunken", bg="#1e1e1e")
-    center_frame.pack(side="left", fill="both", expand=True, padx=5, pady=5)
-
-    tk.Label(center_frame, text=f"Disassembly of {label["text"]}", font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e").pack(pady=(10, 0))
-    view = tk.Text(center_frame, height=22, state="disabled", font=("Courier New", 9),
-                        bg="#2d2d2d", fg="white", insertbackground="white")
-    view.pack(fill="both", expand=True, pady=(5, 2), padx=5)
-    
-    instructions = disassemble_at(process_info.hProcess, get_real_address(current_file, process_info.hProcess, f"{label["text"]}")) 
-    disasm_text = "\n".join(instructions)
-
-    set_text_view(view, disasm_text)
-
 def on_step_button():
     """Detect step button"""
     global button_pressed
@@ -288,6 +255,39 @@ def check_button_pressed():
             button_pressed = None
             return pressed
     return None
+
+def on_double_click(event):
+    global selected_label
+    label = event.widget
+
+    # Réinitialiser l'ancien label s'il y en a un
+    if selected_label and selected_label != event.widget:
+        selected_label.config(bg="#1e1e1e")
+
+    # Appliquer la nouvelle sélection
+    selected_label = event.widget
+    selected_label.config(bg="#333366")
+
+    function_window = tk.Toplevel(root)
+    function_window.title("EduDbg - Simple PE Debugger")
+    function_window.geometry("720x480")
+    function_window.iconbitmap("./edudbg.ico")
+
+    main_frame = tk.Frame(function_window, bg="#2e2e2e")
+    main_frame.pack(fill="both", expand=True)
+
+    center_frame = tk.Frame(main_frame, bd=2, relief="sunken", bg="#1e1e1e")
+    center_frame.pack(side="left", fill="both", expand=True, padx=5, pady=5)
+
+    tk.Label(center_frame, text=f"Disassembly of {label["text"]}", font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e").pack(pady=(10, 0))
+    view = tk.Text(center_frame, height=22, state="disabled", font=("Courier New", 9),
+                        bg="#2d2d2d", fg="white", insertbackground="white")
+    view.pack(fill="both", expand=True, pady=(5, 2), padx=5)
+    
+    instructions = disassemble_at(process_info.hProcess, get_real_address(current_file, process_info.hProcess, f"{label["text"]}")) 
+    disasm_text = "\n".join(instructions)
+
+    set_text_view(view, disasm_text)
 
 def get_module_base_address(hProcess):
     """Get the base address of the main module"""
@@ -475,10 +475,101 @@ def update_disassembly():
     disasm_text = "\n".join(instructions)
     set_text_view(memory_view, disasm_text)
 
+def cleanup_current_session():
+    """Nettoie complètement la session de debug actuelle pour permettre le chargement d'un nouveau fichier"""
+    global process_info, current_file, is_running, is_paused, current_context
+    global current_thread_handle, backup_Dr, backup_Dr7, continue_event
+    global breakpoints, main_addr, addr_str
+    
+    append_to_console("[INFO] Cleaning up current debug session...")
+    
+    # 1. Arrêter la boucle de debug
+    if is_running:
+        is_running = False
+        is_paused = False
+        if continue_event:
+            continue_event.set()  # Débloquer la boucle si elle attend
+    
+    # 2. Terminer le processus en cours s'il existe
+    if process_info:
+        try:
+            # Fermer le handle du thread principal
+            if process_info.hThread:
+                kernel32.CloseHandle(process_info.hThread)
+            
+            # Terminer le processus
+            if process_info.hProcess:
+                kernel32.TerminateProcess(process_info.hProcess, 0)
+                # Attendre que le processus se termine proprement
+                kernel32.WaitForSingleObject(process_info.hProcess, 2000)  # 2 secondes max
+                kernel32.CloseHandle(process_info.hProcess)
+                
+            append_to_console(f"[+] Process {process_info.dwProcessId} terminated")
+            
+        except Exception as e:
+            append_to_console(f"[!] Error terminating process: {e}")
+    
+    # 3. Fermer le handle du thread actuel s'il existe
+    if current_thread_handle:
+        try:
+            kernel32.CloseHandle(current_thread_handle)
+        except Exception as e:
+            append_to_console(f"[!] Error closing thread handle: {e}")
+    
+    # 4. Réinitialiser toutes les variables globales
+    process_info = None
+    current_file = None
+    is_running = False
+    is_paused = False
+    current_context = None
+    current_thread_handle = None
+    backup_Dr = [0, 0, 0, 0]
+    backup_Dr7 = 0
+    continue_event = None
+    breakpoints = {}
+    main_addr = 0
+    addr_str = 0
+    
+    # 5. Nettoyer l'interface utilisateur
+    try:
+        # Vider la liste des breakpoints
+        breakpoint_list.delete(0, tk.END)
+        
+        # Vider les champs d'input
+        bp_input.delete(0, tk.END)
+        hx_input.delete(0, tk.END)
+        
+        # Nettoyer les vues de texte
+        set_text_view(registers_view, "")
+        set_text_view(stack_view, "")
+        set_text_view(memory_view, "")
+        set_text_view(hex_view, "")
+        
+        # Nettoyer la liste des fonctions
+        function_view.config(state="normal")
+        function_view.delete(0, tk.END)
+        # Supprimer tous les widgets enfants (les labels des fonctions)
+        for widget in function_view.winfo_children():
+            widget.destroy()
+        function_view.config(state="disabled")
+        
+        append_to_console("[+] UI cleaned up successfully")
+        
+    except Exception as e:
+        append_to_console(f"[!] Error cleaning UI: {e}")
+    
+    # 6. Petite pause pour s'assurer que tout est bien nettoyé
+    time.sleep(0.5)
+    
+    append_to_console("[+] Session cleanup completed - Ready for new file")
+    append_to_console("-" * 60)
+
 def start_process(path):
     """Start the process in suspended mode and continue until main breakpoint"""
     global process_info, current_file, main_addr, addr_str
-    
+
+    breakpoint_list.delete(0,4)
+
     current_file = path
     startupinfo = STARTUPINFO()
     proc_info = PROCESS_INFORMATION()
@@ -649,6 +740,7 @@ def debug_loop():
                             
                         elif button == "stop":
                             append_to_console("[DEBUG] Processing stop command from GUI")
+                            cleanup_current_session()
                             is_paused = False
                             running = False
 
@@ -659,44 +751,59 @@ def debug_loop():
                         elif button == "add_breakpoint":
                             append_to_console("[DEBUG] Adding Breakpoint")
                             
-                            # Récupérer la valeur saisie dans bp_input
                             bp_address_str = bp_input.get().strip()
                             
                             if not bp_address_str:
                                 append_to_console("[!] Please enter a breakpoint address")
-                                return
+                                continue  # Continue la boucle au lieu de return
                             
                             try:
-                                # Convertir l'adresse (supporte hex avec ou sans 0x, et décimal)
                                 if bp_address_str.startswith('0x') or bp_address_str.startswith('0X'):
                                     bp = int(bp_address_str, 16)
                                 elif bp_address_str.isdigit():
                                     bp = int(bp_address_str)
                                 else:
-                                    # Essayer en hex sans préfixe
                                     bp = int(bp_address_str, 16)
-                                    
+                                
+                                free_dr = -1
                                 for i in range(4):
                                     if getattr(context, f"Dr{i}") == 0:
-                                        setattr(context, f"Dr{i}", bp)
-                                        context.Dr7 |= (1 << (i * 2))
-                                        backup_Dr[i] = bp
-                                        backup_Dr7 = context.Dr7
-                                        if kernel32.SetThreadContext(thread_handle, ctypes.byref(context)):
-                                            append_to_console(f"[+] Breakpoint set at {bp:#018x} in Dr{i}")
-                                            # Ajouter le breakpoint à la liste visuelle
-                                            breakpoint_list.insert(tk.END, f"Dr{i}: {bp:#018x}")
-                                            # Vider le champ input après ajout réussi
-                                            bp_input.delete(0, tk.END)
-                                        else:
-                                            append_to_console("[!] Failed to set context with new breakpoint.")
+                                        free_dr = i
                                         break
-                                else:
+                                
+                                if free_dr == -1:
                                     append_to_console("[!] All hardware breakpoints are in use (max 4).")
+                                    continue
+                                
+                                setattr(context, f"Dr{free_dr}", bp)
+                                
+                                local_enable_bit = free_dr * 2
+                                
+                                context.Dr7 |= (1 << local_enable_bit)
+                                
+                                condition_base = 16 + (free_dr * 4)
+                                size_base = 24 + (free_dr * 2)
+                                
+                                context.Dr7 &= ~(0x3 << condition_base)  # Clear condition bits
+                                context.Dr7 &= ~(0x3 << size_base)       # Clear size bits
+                                
+                                if kernel32.SetThreadContext(thread_handle, ctypes.byref(context)):
+                                    append_to_console(f"[+] Breakpoint set at {bp:#018x} in Dr{free_dr}")
+                                    
+                                    backup_Dr[free_dr] = bp
+                                    backup_Dr7 = context.Dr7
+                                    
+                                    breakpoints[bp] = True
+                                    
+                                    breakpoint_list.insert(tk.END, f"Dr{free_dr}: {bp:#018x}")
+                                    
+                                    bp_input.delete(0, tk.END)
+                                else:
+                                    append_to_console("[!] Failed to set context with new breakpoint.")
+                                    setattr(context, f"Dr{free_dr}", 0)
                                     
                             except ValueError:
                                 append_to_console(f"[!] Invalid address format: '{bp_address_str}'. Use hex (0x1000 or 1000) or decimal.")
-                                
                         elif button == "stack":
                             append_to_console("[DEBUG] Showing stack")
                             for i in range(6):
@@ -734,6 +841,10 @@ def debug_loop():
 def open_file():
     """Open file dialog and start debugging"""
     global continue_event
+    
+    # Nettoyer la session actuelle si elle existe
+    if process_info is not None or is_running:
+        cleanup_current_session()
     
     file_path = filedialog.askopenfilename(
         title="Select PE file",
