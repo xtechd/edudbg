@@ -27,7 +27,7 @@ The debugger interface provides the following controls:
 
 > 🔹 **Breakpoint Limit**: You can set a maximum of four breakpoints at a time. Trying to add more will result in an error or ignore the additional request.
 
-![Edudbg](https://github.com/user-attachments/assets/f513a851-49db-4e53-82ff-a18c4184d2b1)
+![image](https://github.com/user-attachments/assets/82df87a4-3b3d-477c-87e6-fa286c07d253)
 
 ## Debugging Features
 
