@@ -209,37 +209,71 @@ function_view = None
 addr_str = None
 button_pressed = None
 button_lock = threading.Lock()
+selected_label = None
+
+def on_double_click(event):
+    global selected_label
+    label = event.widget
+
+    # Réinitialiser l'ancien label s'il y en a un
+    if selected_label and selected_label != event.widget:
+        selected_label.config(bg="#1e1e1e")
+
+    # Appliquer la nouvelle sélection
+    selected_label = event.widget
+    selected_label.config(bg="#333366")
+
+    function_window = tk.Toplevel(root)
+    function_window.title("EduDbg - Simple PE Debugger")
+    function_window.geometry("720x480")
+    function_window.iconbitmap("./edudbg.ico")
+
+    main_frame = tk.Frame(function_window, bg="#2e2e2e")
+    main_frame.pack(fill="both", expand=True)
+
+    center_frame = tk.Frame(main_frame, bd=2, relief="sunken", bg="#1e1e1e")
+    center_frame.pack(side="left", fill="both", expand=True, padx=5, pady=5)
+
+    tk.Label(center_frame, text=f"Disassembly of {label["text"]}", font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e").pack(pady=(10, 0))
+    view = tk.Text(center_frame, height=22, state="disabled", font=("Courier New", 9),
+                        bg="#2d2d2d", fg="white", insertbackground="white")
+    view.pack(fill="both", expand=True, pady=(5, 2), padx=5)
+    
+    instructions = disassemble_at(process_info.hProcess, get_real_address(current_file, process_info.hProcess, f"{label["text"]}")) 
+    disasm_text = "\n".join(instructions)
+
+    set_text_view(view, disasm_text)
 
 def on_step_button():
-    """Modified step button handler"""
+    """Detect step button"""
     global button_pressed
     with button_lock:
         button_pressed = "step"
     return True
 
 def on_continue_button():
-    """Modified continue button handler"""
+    """Detect continue button"""
     global button_pressed
     with button_lock:
         button_pressed = "continue"
     return True
 
 def on_stop_button():
-    """Modified stop button handler"""
+    """Detect stop button"""
     global button_pressed
     with button_lock:
         button_pressed = "stop"
     return True
 
 def on_break_button():
-    """Modified stop button handler"""
+    """Detect stop button"""
     global button_pressed
     with button_lock:
         button_pressed = "add_breakpoint"
     return True
 
 def on_search_hex_button():
-    """Modified stop button handler"""
+    """Detect stop button"""
     global button_pressed
     with button_lock:
         button_pressed = "search_hex"
@@ -404,7 +438,7 @@ def update_hex(addr):
         return
     
     try:
-        num_lines = 16  # Show more lines in dedicated hex view
+        num_lines = 20  # Show more lines in dedicated hex view
         
         # Clear the hex view and prepare for new content
         hex_view.config(state="normal")
@@ -520,6 +554,9 @@ def start_process(path):
 
     for func in functions:
         function_view.insert("end", func + "\n")
+        label = tk.Label(function_view, text=f"{func}", font=("Segoe UI", 10), fg="white", bg="#1e1e1e", justify='left', anchor='w')
+        label.pack(fill="x")
+        label.bind("<Double-Button-1>", on_double_click)
 
     function_view.config(state="disabled")
 
@@ -785,18 +822,19 @@ def create_gui():
     styled_button(control_frame, "Continue", "#1c904c", on_continue_button).pack(fill="x", pady=3)
     styled_button(control_frame, "Stop", "#b02010", on_stop_button).pack(fill="x", pady=3)
 
+    function_view = tk.Listbox(left_frame, bg="#1e1e1e", fg="white", font=("Segoe UI", 10))
+    function_view.pack(side="right", fill="both", expand=True)
+
     # Center panel - Disassembly
     center_frame = tk.Frame(main_frame, bd=2, relief="sunken", bg="#1e1e1e")
     center_frame.pack(side="left", fill="both", expand=True, padx=5, pady=5)
 
     tk.Label(center_frame, text="Disassembly", font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e").pack(pady=(10, 0))
-    memory_view = tk.Text(center_frame, height=22, state="disabled", font=("Courier New", 9),
-                        bg="#2d2d2d", fg="white", insertbackground="white")
+    memory_view = tk.Text(center_frame, height=22, state="disabled", font=("Courier New", 9), bg="#2d2d2d", fg="white", insertbackground="white")
     memory_view.pack(fill="both", expand=True, pady=(5, 2), padx=5)
 
     tk.Label(center_frame, text="HexView", font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e").pack(pady=(5, 0))
-    hex_view = tk.Text(center_frame, height=15, state="disabled", font=("Courier New", 9),
-                    bg="#2d2d2d", fg="white", insertbackground="white")
+    hex_view = tk.Text(center_frame, height=15, state="disabled", font=("Courier New", 9), bg="#2d2d2d", fg="white", insertbackground="white")
     hex_view.pack(fill="both", expand=True, pady=(2, 10), padx=5)
 
     styled_button(center_frame, "Search", "#6d6d6d", on_search_hex_button).pack(fill="x", side='right')
@@ -809,11 +847,6 @@ def create_gui():
     right_frame = tk.Frame(main_frame, width=475, bd=2, relief="sunken", bg="#1e1e1e")
     right_frame.pack(side="left", fill="y", padx=5, pady=8)
     right_frame.pack_propagate(False)
-
-    tk.Label(left_frame, text="Functions", font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e").pack(pady=(10, 0))
-    function_view = tk.Text(left_frame, height=22, state="disabled", font=("Courier New", 9),
-                        bg="#2d2d2d", fg="white", insertbackground="white")
-    function_view.pack(fill="y", expand=True, pady=(5, 2), padx=5)
 
     def styled_label(parent, text):
         return tk.Label(parent, text=text, font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e")
@@ -829,12 +862,11 @@ def create_gui():
     # Label pour la console debug
     styled_label(right_frame, "Debug Console").pack(pady=(10, 0))
 
-    # Frame pour la console et scrollbar - prend tout l'espace restant
+    # Frame pour la console
     console_frame = tk.Frame(right_frame, bg="#1e1e1e")
     console_frame.pack(fill="both", expand=True, pady=(2, 5))
 
-    debug_console = tk.Text(console_frame, width=60, state="disabled",
-                            font=("Courier New", 9), bg="#2d2d2d", fg="white", insertbackground="white")
+    debug_console = tk.Text(console_frame, width=60, state="disabled", font=("Courier New", 9), bg="#2d2d2d", fg="white", insertbackground="white")
     debug_console.pack(fill="both", expand=True)
 
     append_to_console("[INFO] EduDbg initialized - Load a PE file to start debugging")
