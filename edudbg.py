@@ -370,28 +370,38 @@ def set_text_view(widget, text):
     widget.config(state="disabled")
 
 def update_registers():
-    """Update the registers view"""
+    """Update the registers view in two columns and add flags"""
     if not current_context:
         return
-    
-    reg_text = f"RAX: {current_context.Rax:#018x}\n"
-    reg_text += f"RBX: {current_context.Rbx:#018x}\n"
-    reg_text += f"RCX: {current_context.Rcx:#018x}\n"
-    reg_text += f"RDX: {current_context.Rdx:#018x}\n"
-    reg_text += f"RSI: {current_context.Rsi:#018x}\n"
-    reg_text += f"RDI: {current_context.Rdi:#018x}\n"
-    reg_text += f"RIP: {current_context.Rip:#018x}\n"
-    reg_text += f"RSP: {current_context.Rsp:#018x}\n"
+
+    reg_text = ""
+
+    # Registres colonne de gauche et droite, sans liste de compréhension
+    reg_text += f"RAX: {current_context.Rax:#018x}    RBX: {current_context.Rbx:#018x}\n"
+    reg_text += f"RCX: {current_context.Rcx:#018x}    RDI: {current_context.Rdi:#018x}\n"
+    reg_text += f"RDX: {current_context.Rdx:#018x}    RIP: {current_context.Rip:#018x}\n"
+    reg_text += f"RSI: {current_context.Rsi:#018x}    RSP: {current_context.Rsp:#018x}\n"
+    reg_text += f"R8 : {current_context.R8:#018x}    R9 : {current_context.R9:#018x}\n"
+    reg_text += f"R10: {current_context.R10:#018x}    R11: {current_context.R11:#018x}\n"
+    reg_text += f"R12: {current_context.R12:#018x}    R13: {current_context.R13:#018x}\n"
+    reg_text += f"R14: {current_context.R14:#018x}    R15: {current_context.R15:#018x}\n"
     reg_text += f"RBP: {current_context.Rbp:#018x}\n"
-    reg_text += f"R8 :  {current_context.R8:#018x}\n"
-    reg_text += f"R9 :  {current_context.R9:#018x}\n"
-    reg_text += f"R10: {current_context.R10:#018x}\n"
-    reg_text += f"R11: {current_context.R11:#018x}\n"
-    reg_text += f"R12: {current_context.R12:#018x}\n"
-    reg_text += f"R13: {current_context.R13:#018x}\n"
-    reg_text += f"R14: {current_context.R14:#018x}\n"
-    reg_text += f"R15: {current_context.R15:#018x}\n"
-    
+
+    # Extraction manuelle des flags
+    flags = current_context.EFlags
+    cf = (flags >> 0) & 1
+    pf = (flags >> 2) & 1
+    af = (flags >> 4) & 1
+    zf = (flags >> 6) & 1
+    sf = (flags >> 7) & 1
+    tf = (flags >> 8) & 1
+    _if = (flags >> 9) & 1
+    df = (flags >> 10) & 1
+    of = (flags >> 11) & 1
+
+    # Affichage des flags
+    reg_text += f"FLAGS: CF={cf} PF={pf} AF={af} ZF={zf} SF={sf} TF={tf} IF={_if} DF={df} OF={of}"
+
     set_text_view(registers_view, reg_text)
 
 def get_user_functions(path):
@@ -460,9 +470,7 @@ def update_hex(addr):
         # Display in hex_view instead of console
         hex_view.insert("end", hex_output)
         hex_view.config(state="disabled")
-        
-        append_to_console(f"[+] Hex dump displayed for address 0x{addr:x}")
-    
+            
     except ValueError:
         append_to_console("[!] Adresse invalide")
 
@@ -723,23 +731,18 @@ def debug_loop():
                 while is_paused and is_running:
                     # Check for GUI button presses while waiting
                     button = check_button_pressed()
-                    if button:
-                        append_to_console(f"[GUI] {button.upper()} button pressed")
-                        
+                    if button:                        
                         if button == "step":
-                            append_to_console("[DEBUG] Processing step command from GUI")
                             context.EFlags |= 0x100  # Trap flag
                             if kernel32.SetThreadContext(thread_handle, ctypes.byref(context)):
                                 is_paused = False
                                 kernel32.ContinueDebugEvent(debug_event.dwProcessId, thread_id, DBG_CONTINUE)
                         
                         elif button == "continue":
-                            append_to_console("[DEBUG] Processing continue command from GUI")
                             is_paused = False
                             kernel32.ContinueDebugEvent(debug_event.dwProcessId, thread_id, DBG_CONTINUE)
                             
                         elif button == "stop":
-                            append_to_console("[DEBUG] Processing stop command from GUI")
                             cleanup_current_session()
                             is_paused = False
                             running = False
@@ -804,17 +807,6 @@ def debug_loop():
                                     
                             except ValueError:
                                 append_to_console(f"[!] Invalid address format: '{bp_address_str}'. Use hex (0x1000 or 1000) or decimal.")
-                        elif button == "stack":
-                            append_to_console("[DEBUG] Showing stack")
-                            for i in range(6):
-                                buffer = ctypes.create_string_buffer(8)
-                                bytes_read = ctypes.c_size_t(0)
-                                addr = context.Rsp + (i * 8)
-                                if kernel32.ReadProcessMemory(process_info.hProcess, ctypes.c_void_p(addr), buffer, 8, ctypes.byref(bytes_read)):
-                                    val = int.from_bytes(buffer.raw, 'little')
-                                    append_to_console(f"0x{addr:018x} | {val:#018x}")
-                                else:
-                                    append_to_console(f"[!] Failed to read memory at 0x{addr:x}")
 
                     if continue_event.wait(timeout=0.1):
                         break
