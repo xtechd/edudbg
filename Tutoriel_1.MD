@@ -61,7 +61,9 @@ EduDbg démarre le programme en pause, juste avant d’exécuter la fonction mai
 Exemple dans la console :
 
 [+] Started process main.exe with PID XXXX
+
 [*] Waiting for breakpoint to hit main...
+
 [+] Breakpoint hit at main: RIP=0x...
 
 ### 5. Comprendre ce que l’on voit
