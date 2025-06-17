@@ -28,7 +28,7 @@ printf("Résultat: %d\\n", c);
 return 0;
 
 }
-
+```
 Compile-le avec les symboles de debug (important pour que le débogueur fonctionne bien) :
 
 x86_64-w64-mingw32-gcc -g -O0 main.c -o main.exe
