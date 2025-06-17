@@ -42,13 +42,14 @@ Lance edudbg.py avec Python :
 python3 edudbg.py
 ```
 L’interface graphique s’ouvre. Elle contient plusieurs zones :
-Console : messages d’état et événements
-Breakpoints : liste des points d’arrêt définis
-Registres : état du processeur
-Pile (stack) : mémoire temporaire des fonctions
-Disassembly : instructions exécutées
-HexView : vue brute de la mémoire
-Fonctions : fonctions détectées dans l’exécutable
+
+- Console : messages d’état et événements
+- Breakpoints : liste des points d’arrêt définis
+- Registres : état du processeur
+- Pile (stack) : mémoire temporaire des fonctions
+- Disassembly : instructions exécutées
+- HexView : vue brute de la mémoire
+- Fonctions : fonctions détectées dans l’exécutable
 
 ### 4. Ouvrir le programme à déboguer
 
