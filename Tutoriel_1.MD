@@ -69,20 +69,24 @@ Exemple dans la console :
 
 ### 5. Comprendre ce que l’on voit
 
-Registres
+**Registres**
 Les registres sont des zones de stockage internes au processeur. Exemples :
 
 RAX, RBX, RCX, etc. contiennent des valeurs intermédiaires
+
 RIP indique l’adresse de l’instruction actuelle
 
-Pile (stack)
+**Pile (stack)**
 La pile est utilisée pour stocker les variables locales et les retours de fonctions.
 
-Désassemblage (Disassembly)
+**Désassemblage (Disassembly)**
 
 C’est la traduction du code machine en instructions lisibles comme :
+
 0x140001000 mov eax, 2
+
 0x140001003 mov ebx, 3
+
 0x140001006 add eax, ebx
 
 ### 6. Avancer pas à pas dans le programme
