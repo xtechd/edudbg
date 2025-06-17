@@ -15,7 +15,7 @@ Un débogueur est un outil qui permet de **regarder à l’intérieur d’un pro
 ### 2. Préparer un programme d’exemple
 
 Voici un petit programme C :
-c
+```c
 #include <stdio.h>
 int main() {
 
