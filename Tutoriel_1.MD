@@ -70,6 +70,7 @@ Exemple dans la console :
 ### 5. Comprendre ce que l’on voit
 
 **Registres**
+
 Les registres sont des zones de stockage internes au processeur. Exemples :
 
 RAX, RBX, RCX, etc. contiennent des valeurs intermédiaires
@@ -77,6 +78,7 @@ RAX, RBX, RCX, etc. contiennent des valeurs intermédiaires
 RIP indique l’adresse de l’instruction actuelle
 
 **Pile (stack)**
+
 La pile est utilisée pour stocker les variables locales et les retours de fonctions.
 
 **Désassemblage (Disassembly)**
