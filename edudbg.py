@@ -746,6 +746,7 @@ def debug_loop():
                             cleanup_current_session()
                             is_paused = False
                             running = False
+                            break
 
                         elif button == "search_hex":
                             addr_str = int(hx_input.get().strip(), 16)
