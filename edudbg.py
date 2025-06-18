@@ -279,12 +279,12 @@ def on_double_click(event):
     center_frame = tk.Frame(main_frame, bd=2, relief="sunken", bg="#1e1e1e")
     center_frame.pack(side="left", fill="both", expand=True, padx=5, pady=5)
 
-    tk.Label(center_frame, text=f"Disassembly of {label["text"]}", font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e").pack(pady=(10, 0))
+    tk.Label(center_frame, text=f"Disassembly of {label['text']}", font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e").pack(pady=(10, 0))
     view = tk.Text(center_frame, height=22, state="disabled", font=("Courier New", 9),
                         bg="#2d2d2d", fg="white", insertbackground="white")
     view.pack(fill="both", expand=True, pady=(5, 2), padx=5)
     
-    instructions = disassemble_at(process_info.hProcess, get_real_address(current_file, process_info.hProcess, f"{label["text"]}")) 
+    instructions = disassemble_at(process_info.hProcess, get_real_address(current_file, process_info.hProcess, f"{label['text']}")) 
     disasm_text = "\n".join(instructions)
 
     set_text_view(view, disasm_text)
