@@ -336,7 +336,14 @@ def get_real_address(path, hProcess, function_name):
 
     return base_address + text_offset + main_offset
 
+def get_function_name(path, addr, hProcess):
+    function = get_user_functions(path)
+    for name in function:
+        if get_real_address(path, hProcess, name) == int(addr, 16):
+            return name
+
 def disassemble_at(hProcess, address, size=64):
+    global current_file
     """Disassemble code at a given address"""
     buffer = ctypes.create_string_buffer(size)
     bytes_read = ctypes.c_size_t(0)
@@ -349,7 +356,7 @@ def disassemble_at(hProcess, address, size=64):
 
     instructions = []
     for instr in md.disasm(buffer.raw[:bytes_read.value], address):
-        instructions.append(f"0x{instr.address:x}\t{instr.mnemonic}\t{instr.op_str}")
+        instructions.append(f"0x{instr.address:x}\t{instr.mnemonic}\t{instr.op_str} ; {get_function_name(current_file, instr.op_str, hProcess)} " if instr.mnemonic == "call" and get_function_name(current_file, instr.op_str, hProcess) != None  else f"0x{instr.address:x}\t{instr.mnemonic}\t{instr.op_str}")
         if instr.mnemonic == "ret":
             break
     
