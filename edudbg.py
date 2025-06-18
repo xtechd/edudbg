@@ -354,9 +354,22 @@ def disassemble_at(hProcess, address, size=64):
     md = Cs(CS_ARCH_X86, CS_MODE_64)
     md.detail = True
 
+    def is_valid_hex(var):
+        try:
+            int(var, 16)
+            return True
+        except (ValueError, TypeError):
+            return False
     instructions = []
     for instr in md.disasm(buffer.raw[:bytes_read.value], address):
-        instructions.append(f"0x{instr.address:x}\t{instr.mnemonic}\t{instr.op_str} ; {get_function_name(current_file, instr.op_str, hProcess)} " if instr.mnemonic == "call" and get_function_name(current_file, instr.op_str, hProcess) != None  else f"0x{instr.address:x}\t{instr.mnemonic}\t{instr.op_str}")
+
+        if instr.mnemonic == "call" and is_valid_hex(instr.op_str):
+            if get_function_name(current_file, instr.op_str, hProcess) != None:
+                instructions.append(f"0x{instr.address:x}\t{instr.mnemonic}\t{instr.op_str} ; {get_function_name(current_file, instr.op_str, hProcess)} ")
+            else:
+                instructions.append(f"0x{instr.address:x}\t{instr.mnemonic}\t{instr.op_str}")
+        else:
+            instructions.append(f"0x{instr.address:x}\t{instr.mnemonic}\t{instr.op_str}")
         if instr.mnemonic == "ret":
             break
     
