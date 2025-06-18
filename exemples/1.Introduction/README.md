@@ -12,28 +12,8 @@ Un débogueur est un outil qui permet de **regarder à l’intérieur d’un pro
 - **Lire la mémoire**, les registres, la pile
 - **Mettre des pauses** à des endroits précis du code
 
-### 2. Préparer un programme d’exemple
-
-Voici un petit programme C :
-```c
-#include <stdio.h>
-int main() {
-
-int a = 2;
-int b = 3;
-int c = a + b;
-
-printf("Résultat: %d\\n", c);
-
-return 0;
-
-}
-```
-Compile-le avec les symboles de debug (important pour que le débogueur fonctionne bien) :
-```
-x86_64-w64-mingw32-gcc -g -O0 main.c -o main.exe
-```
-Le fichier main.exe sera utilisé dans EduDbg.
+Pour tester notre debugger avec cette introduction, nous avons mis à votre disposition un fichier éxecutable nommé
+introduction.exe. Ce fichier est un programme faisant simplement la somme de deux nombres et possède donc deux fonctions intéréssante (main, somme).
 
 ### 3. Lancer EduDbg
 
@@ -49,13 +29,13 @@ L’interface graphique s’ouvre. Elle contient plusieurs zones :
 - Pile (stack) : mémoire temporaire des fonctions
 - Disassembly : instructions exécutées
 - HexView : vue brute de la mémoire
-- Fonctions : fonctions détectées dans l’exécutable
+- Symbols : symboles détectées dans l’exécutable
 
 ### 4. Ouvrir le programme à déboguer
 
 Menu File > Open File...
 
-Sélectionne main.exe
+Sélectionne introduction.exe
 
 EduDbg démarre le programme en pause, juste avant d’exécuter la fonction main. Il place automatiquement un point d’arrêt au début de main.
 
