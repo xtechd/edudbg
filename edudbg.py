@@ -425,24 +425,22 @@ def update_registers():
     set_text_view(registers_view, reg_text)
 
 def get_user_functions(path):
-    functions = []
-    binary = lief.parse(path)
+    pe = lief.parse(path)
+    
+    symboles = []
 
-    # Récupérer la section .text
-    text_section = binary.get_section(".text")
-    if not text_section:
-        append_to_console("[!] Section .text non trouvée.")
-        exit(1)
+    # Parcours des symboles
+    for symbole in pe.symbols:
+        nom = symbole.name
+        if (
+            nom
+            and "." not in nom
+            and "_" not in nom
+        ):
+            symboles.append(nom)
+            print(nom)
 
-    text_va = text_section.virtual_address
-    text_size = text_section.size
-    text_end = text_va + text_size
-
-    for sym in binary.symbols:
-        # On vérifie que c’est une fonction et qu’elle est bien dans .text
-        if text_va <= sym.value < text_end and (not sym.name.startswith(("_", "__", "@", ".", "??"))):
-            functions.append(sym.name)
-    return functions
+    return symboles
 
 def update_stack():
     """Update the stack view"""
@@ -587,7 +585,7 @@ def cleanup_current_session():
         append_to_console(f"[!] Error cleaning UI: {e}")
     
     # 6. Petite pause pour s'assurer que tout est bien nettoyé
-    time.sleep(0.5)
+    time.sleep(1)
     
     append_to_console("[+] Session cleanup completed - Ready for new file")
     append_to_console("-" * 60)
