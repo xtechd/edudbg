@@ -8,7 +8,8 @@ Chaque sous-dossier contient son propre fichier `README.md` qui explique le cont
 
 ## 📘 Contenu
 
-[1.Introduction - Découverte de Edudbg](./1.Introduction/)
+- [1.Introduction - Découverte de Edudbg](./1.Introduction/)
+- [2.Mot de passe - Premier challenge](<./2.MotDePasse/>)
 
 > ✏️ *Ce fichier sera mis à jour au fur et à mesure de l’ajout de nouveaux dossiers.*
 
