@@ -365,7 +365,7 @@ def disassemble_at(hProcess, address, size=64):
 
         if instr.mnemonic == "call" and is_valid_hex(instr.op_str):
             if get_function_name(current_file, instr.op_str, hProcess) != None:
-                instructions.append(f"0x{instr.address:x}\t{instr.mnemonic}\t{instr.op_str} ; {get_function_name(current_file, instr.op_str, hProcess)} ")
+                instructions.append(f"0x{instr.address:x}\t{instr.mnemonic}\t{instr.op_str} ; <{get_function_name(current_file, instr.op_str, hProcess)}>")
             else:
                 instructions.append(f"0x{instr.address:x}\t{instr.mnemonic}\t{instr.op_str}")
         else:
@@ -438,7 +438,6 @@ def get_user_functions(path):
             and "_" not in nom
         ):
             symboles.append(nom)
-            print(nom)
 
     return symboles
 
