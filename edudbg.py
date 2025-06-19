@@ -1205,7 +1205,7 @@ def create_gui():
     # Debug controls section
     debug_label = tk.Label(left_frame, text="Debug Controls", font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e")
     debug_label.pack(pady=(10, 5))
-    add_tooltip_to_label(debug_label, "Contrôles de débogage:\n• Step: Exécute une instruction\n• Continue: Reprend l'exécution\n• Stop: Arrête le processus")
+    add_tooltip_to_label(debug_label, "Contrôles de débogage:\n• Step: Exécute une instruction\n• Step Over: Exécute le call sans rentrer dans la fonction\n• Continue: Reprend l'exécution\n• Stop: Arrête le processus")
 
     control_frame = tk.Frame(left_frame, bg="#1e1e1e")
     control_frame.pack(fill="x", padx=5)
