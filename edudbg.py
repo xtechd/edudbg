@@ -1,13 +1,15 @@
 import ctypes
 import lief
 import pefile
+import re
+import threading
 import time
 import tkinter as tk
-import threading
-from tkinter import filedialog, messagebox
+
 from capstone import *
 from capstone.x86 import *
 from ctypes import wintypes
+from tkinter import filedialog, messagebox
 
 """ 
 NOTE :
@@ -218,6 +220,13 @@ def on_step_button():
         button_pressed = "step"
     return True
 
+def on_step_over_button():
+    """Detect step over button"""
+    global button_pressed
+    with button_lock:
+        button_pressed = "step_over"
+    return True
+
 def on_continue_button():
     """Detect continue button"""
     global button_pressed
@@ -255,6 +264,113 @@ def check_button_pressed():
             button_pressed = None
             return pressed
     return None
+
+def step_over():
+    """Step over - execute next instruction, but step over function calls"""
+    global current_context, current_thread_handle, process_info
+
+    if not current_context or not current_thread_handle or not process_info:
+        return False
+
+    # Lire l'instruction courante pour détecter si c'est un CALL
+    buffer = ctypes.create_string_buffer(16)  # Assez pour la plupart des instructions
+    bytes_read = ctypes.c_size_t(0)
+
+    if not kernel32.ReadProcessMemory(process_info.hProcess, ctypes.c_void_p(current_context.Rip), 
+                                    buffer, 16, ctypes.byref(bytes_read)):
+        append_to_console("[!] Failed to read memory for step over")
+        return False
+
+    # Désassembler l'instruction courante
+    md = Cs(CS_ARCH_X86, CS_MODE_64)
+    instructions = list(md.disasm(buffer.raw[:bytes_read.value], current_context.Rip, count=1))
+
+    if not instructions:
+        append_to_console("[!] Failed to disassemble current instruction")
+        return False
+
+    current_instr = instructions[0]
+    next_rip = current_instr.address + current_instr.size
+
+    # Si c'est un CALL, on place un breakpoint temporaire après l'instruction
+    if current_instr.mnemonic == "call":
+        # Trouver un registre Dr libre pour le breakpoint temporaire
+        context = CONTEXT64()
+        context.ContextFlags = CONTEXT_CUSTOM
+        
+        if not kernel32.GetThreadContext(current_thread_handle, ctypes.byref(context)):
+            append_to_console("[!] Failed to get thread context for step over")
+            return False
+        
+        # Chercher un Dr libre
+        free_dr = -1
+        for i in range(4):
+            if getattr(context, f"Dr{i}") == 0:
+                free_dr = i
+                break
+        
+        if free_dr == -1:
+            append_to_console("[!] No free hardware breakpoint for step over - using single step instead")
+            # Fallback sur step normal
+            context.EFlags |= 0x100  # Trap flag
+            if kernel32.SetThreadContext(current_thread_handle, ctypes.byref(context)):
+                return True
+            return False
+        
+        # Placer le breakpoint temporaire à l'instruction suivante
+        setattr(context, f"Dr{free_dr}", next_rip)
+        local_enable_bit = free_dr * 2
+        context.Dr7 |= (1 << local_enable_bit)
+        
+        # Marquer ce breakpoint comme temporaire dans un dict global
+        if 'temp_breakpoints' not in globals():
+            global temp_breakpoints
+            temp_breakpoints = {}
+        temp_breakpoints[next_rip] = free_dr
+        
+        if kernel32.SetThreadContext(current_thread_handle, ctypes.byref(context)):
+            append_to_console(f"[DEBUG] Step over: temporary breakpoint set at {next_rip:#018x}")
+            return True
+        else:
+            append_to_console("[!] Failed to set temporary breakpoint for step over")
+            return False
+
+    else:
+        # Pour toute autre instruction, faire un step normal
+        context = CONTEXT64()
+        context.ContextFlags = CONTEXT_CUSTOM
+        
+        if not kernel32.GetThreadContext(current_thread_handle, ctypes.byref(context)):
+            return False
+            
+        context.EFlags |= 0x100  # Trap flag
+        if kernel32.SetThreadContext(current_thread_handle, ctypes.byref(context)):
+            return True
+        return False
+
+def cleanup_temp_breakpoint(hit_address):
+    """Clean up temporary breakpoint used for step over"""
+    global temp_breakpoints, current_thread_handle
+
+    if 'temp_breakpoints' not in globals():
+        return
+
+    if hit_address in temp_breakpoints:
+        dr_num = temp_breakpoints[hit_address]
+        
+        context = CONTEXT64()
+        context.ContextFlags = CONTEXT_CUSTOM
+        
+        if kernel32.GetThreadContext(current_thread_handle, ctypes.byref(context)):
+            # Désactiver le breakpoint
+            setattr(context, f"Dr{dr_num}", 0)
+            local_enable_bit = dr_num * 2
+            context.Dr7 &= ~(1 << local_enable_bit)
+            
+            if kernel32.SetThreadContext(current_thread_handle, ctypes.byref(context)):
+                append_to_console(f"[DEBUG] Temporary breakpoint cleaned up from Dr{dr_num}")
+            
+        del temp_breakpoints[hit_address]
 
 def on_double_click(event):
     global selected_label
@@ -492,13 +608,21 @@ def update_hex(addr):
         append_to_console("[!] Adresse invalide")
 
 def update_disassembly():
-    """Update the disassembly view"""
+    """Update the disassembly view with colors"""
     if not current_context or not process_info:
         return
     
     instructions = disassemble_at(process_info.hProcess, current_context.Rip, 128)
-    disasm_text = "\n".join(instructions)
-    set_text_view(memory_view, disasm_text)
+    
+    memory_view.config(state="normal")
+    memory_view.delete(1.0, "end")
+    
+    # Insérer chaque ligne et la colorier
+    for i, instruction in enumerate(instructions, 1):
+        memory_view.insert("end", instruction + "\n")
+        colorize_instruction(memory_view, instruction, i, current_context.Rip)
+    
+    memory_view.config(state="disabled")
 
 def cleanup_current_session():
     """Nettoie complètement la session de debug actuelle pour permettre le chargement d'un nouveau fichier"""
@@ -754,6 +878,10 @@ def debug_loop():
                             if kernel32.SetThreadContext(thread_handle, ctypes.byref(context)):
                                 is_paused = False
                                 kernel32.ContinueDebugEvent(debug_event.dwProcessId, thread_id, DBG_CONTINUE)
+                        elif button == "step_over":
+                            if step_over():
+                                is_paused = False
+                                kernel32.ContinueDebugEvent(debug_event.dwProcessId, thread_id, DBG_CONTINUE)
                         
                         elif button == "continue":
                             is_paused = False
@@ -847,7 +975,6 @@ def debug_loop():
         kernel32.CloseHandle(current_thread_handle)
         current_thread_handle = None
 
-
 def open_file():
     """Open file dialog and start debugging"""
     global continue_event
@@ -879,6 +1006,150 @@ def open_file():
         debug_thread = threading.Thread(target=start_debug_thread, daemon=True)
         debug_thread.start()
 
+def setup_disasm_colors(text_widget):
+    """Configure les couleurs pour le désassemblage"""
+    # Adresses
+    text_widget.tag_config("address", foreground="#8CDCDA")  # Cyan clair
+    
+    # Instructions
+    text_widget.tag_config("mnemonic_jump", foreground="#FF6B6B")     # Rouge pour jumps
+    text_widget.tag_config("mnemonic_call", foreground="#4ECDC4")     # Turquoise pour calls
+    text_widget.tag_config("mnemonic_ret", foreground="#45B7D1")      # Bleu pour returns
+    text_widget.tag_config("mnemonic_mov", foreground="#96CEB4")      # Vert pour mov
+    text_widget.tag_config("mnemonic_cmp", foreground="#FFEAA7")      # Jaune pour cmp/test
+    text_widget.tag_config("mnemonic_push", foreground="#DDA0DD")     # Violet pour push/pop
+    text_widget.tag_config("mnemonic_default", foreground="#F8F8F2")  # Blanc pour autres
+    
+    # Opérandes
+    text_widget.tag_config("register", foreground="#BD93F9")          # Violet pour registres
+    text_widget.tag_config("immediate", foreground="#FFB86C")         # Orange pour immédiats
+    text_widget.tag_config("memory", foreground="#50FA7B")            # Vert pour mémoire
+    text_widget.tag_config("comment", foreground="#6272A4")           # Gris pour commentaires
+    
+    # Breakpoint highlight
+    text_widget.tag_config("breakpoint_line", background="#8B0000")   # Rouge foncé
+
+def colorize_instruction(text_widget, line, line_number, current_rip):
+    """Colorise une ligne d'instruction"""
+    global breakpoints
+    
+    parts = line.split('\t')
+    if len(parts) < 2:
+        return
+    
+    address_part = parts[0]
+    mnemonic = parts[1] if len(parts) > 1 else ""
+    operands = parts[2] if len(parts) > 2 else ""
+    
+    start_pos = f"{line_number}.0"
+    
+    # Colorier l'adresse
+    addr_end = f"{line_number}.{len(address_part)}"
+    text_widget.tag_add("address", start_pos, addr_end)
+    
+    mnemonic_start = f"{line_number}.{len(address_part) + 1}"
+    mnemonic_end = f"{line_number}.{len(address_part) + 1 + len(mnemonic)}"
+    
+    if mnemonic in ["jmp", "je", "jne", "jz", "jnz", "jl", "jle", "jg", "jge", "ja", "jae", "jb", "jbe", "jo", "jno", "js", "jns", "jc", "jnc"]:
+        text_widget.tag_add("mnemonic_jump", mnemonic_start, mnemonic_end)
+    elif mnemonic == "call":
+        text_widget.tag_add("mnemonic_call", mnemonic_start, mnemonic_end)
+    elif mnemonic in ["ret", "retn", "retf"]:
+        text_widget.tag_add("mnemonic_ret", mnemonic_start, mnemonic_end)
+    elif mnemonic in ["mov", "movsx", "movzx", "lea"]:
+        text_widget.tag_add("mnemonic_mov", mnemonic_start, mnemonic_end)
+    elif mnemonic in ["cmp", "test"]:
+        text_widget.tag_add("mnemonic_cmp", mnemonic_start, mnemonic_end)
+    elif mnemonic in ["push", "pop"]:
+        text_widget.tag_add("mnemonic_push", mnemonic_start, mnemonic_end)
+    else:
+        text_widget.tag_add("mnemonic_default", mnemonic_start, mnemonic_end)
+    
+    # Colorier les opérandes
+    if operands:
+        operands_start = f"{line_number}.{len(address_part) + 1 + len(mnemonic) + 1}"
+        colorize_operands(text_widget, operands, operands_start, line_number)
+    
+    # Highlight si c'est l'instruction courante (RIP)
+    try:
+        line_addr = int(address_part, 16)
+        if line_addr == current_rip:
+            text_widget.tag_add("breakpoint_line", start_pos, f"{line_number}.end")
+    except:
+        pass
+
+def colorize_operands(text_widget, operands_text, start_pos, line_number):
+    """Colorise les opérandes d'une instruction"""    
+    # Registres 64-bit, 32-bit, 16-bit, 8-bit
+    register_pattern = r'\b(rax|rbx|rcx|rdx|rsi|rdi|rbp|rsp|r8|r9|r10|r11|r12|r13|r14|r15|eax|ebx|ecx|edx|esi|edi|ebp|esp|ax|bx|cx|dx|si|di|bp|sp|al|ah|bl|bh|cl|ch|dl|dh)\b'
+    
+    # Valeurs immédiates (hex et décimal)
+    immediate_pattern = r'\b(0x[0-9a-fA-F]+|\d+)\b'
+    
+    # Références mémoire [...]
+    memory_pattern = r'\[[^\]]+\]'
+    
+    # Commentaires ; ...
+    comment_pattern = r';.*$'
+    
+    base_col = int(start_pos.split('.')[1])
+    
+    # Colorier les commentaires en premier
+    for match in re.finditer(comment_pattern, operands_text):
+        start_col = base_col + match.start()
+        end_col = base_col + match.end()
+        text_widget.tag_add("comment", f"{line_number}.{start_col}", f"{line_number}.{end_col}")
+    
+    # Colorier les références mémoire
+    for match in re.finditer(memory_pattern, operands_text):
+        start_col = base_col + match.start()
+        end_col = base_col + match.end()
+        text_widget.tag_add("memory", f"{line_number}.{start_col}", f"{line_number}.{end_col}")
+    
+    # Colorier les registres
+    for match in re.finditer(register_pattern, operands_text, re.IGNORECASE):
+        start_col = base_col + match.start()
+        end_col = base_col + match.end()
+        text_widget.tag_add("register", f"{line_number}.{start_col}", f"{line_number}.{end_col}")
+    
+    # Colorier les valeurs immédiates
+    for match in re.finditer(immediate_pattern, operands_text):
+        start_col = base_col + match.start()
+        end_col = base_col + match.end()
+        text_widget.tag_add("immediate", f"{line_number}.{start_col}", f"{line_number}.{end_col}")
+
+def show_tooltip(event, text):
+    """Affiche un tooltip à la position de la souris"""
+    widget = event.widget
+    x = widget.winfo_rootx() + 25
+    y = widget.winfo_rooty() + 25
+    
+    tooltip_window = tk.Toplevel(widget)
+    tooltip_window.wm_overrideredirect(True)
+    tooltip_window.wm_geometry(f"+{x}+{y}")
+    tooltip_window.configure(bg="#ffffe0")
+    
+    label = tk.Label(tooltip_window, text=text, justify=tk.LEFT,
+                    background="#ffffe0", relief=tk.SOLID, borderwidth=1,
+                    font=("Segoe UI", "8", "normal"), wraplength=300)
+    label.pack(ipadx=1)
+    
+    widget.tooltip_window = tooltip_window
+
+def hide_tooltip(event):
+    """Cache le tooltip"""
+    widget = event.widget
+    if hasattr(widget, 'tooltip_window'):
+        widget.tooltip_window.destroy()
+        delattr(widget, 'tooltip_window')
+
+def add_tooltip_to_label(label, tooltip_text):
+    """Ajoute un tooltip à un label existant"""
+    current_text = label.cget("text")
+    label.config(text=current_text + "", cursor="hand2")
+    label.bind("<Enter>", lambda e: show_tooltip(e, tooltip_text))
+    label.bind("<Leave>", hide_tooltip)
+
 def create_gui():
     """Create the GUI with modern styled buttons"""
     global root, debug_console, registers_view, stack_view, memory_view
@@ -896,13 +1167,6 @@ def create_gui():
     file_menu.add_command(label="Open file...", command=open_file)
     file_menu.add_command(label="Quit", command=root.quit)
     menubar.add_cascade(label="File", menu=file_menu)
-
-    debug_menu = tk.Menu(menubar, tearoff=0)
-    debug_menu.add_command(label="Step", command=on_step_button)
-    debug_menu.add_command(label="Continue", command=on_continue_button)
-    debug_menu.add_command(label="Stop", command=on_stop_button)
-    debug_menu.add_command(label="Add Breakpoint", command=on_break_button)
-    menubar.add_cascade(label="Debug", menu=debug_menu)
 
     root.config(menu=menubar)
 
@@ -923,7 +1187,11 @@ def create_gui():
     left_frame.pack(side="left", fill="y", padx=5, pady=5)
     left_frame.pack_propagate(False)
 
-    tk.Label(left_frame, text="Breakpoints", font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e").pack(pady=(5, 0))
+    # Breakpoints section
+    bp_label = tk.Label(left_frame, text="Breakpoints", font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e")
+    bp_label.pack(pady=(5, 0))
+    add_tooltip_to_label(bp_label, "Breakpoints:\n• Ajoutez une adresse hexadécimale (ex: 0x401000)\n• Maximum 4 breakpoints hardware\n• Double-cliquez pour supprimer")
+    
     breakpoint_list = tk.Listbox(left_frame, height=8, bg="#2d2d2d", fg="white", selectbackground="#2d2d2d", relief="flat")
     breakpoint_list.pack(fill="x", pady=5, padx=5)
 
@@ -934,12 +1202,16 @@ def create_gui():
 
     styled_button(bp_frame, "Add", "#650000", on_break_button).pack(side='right')
 
-    tk.Label(left_frame, text="Debug Controls", font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e").pack(pady=(10, 5))
+    # Debug controls section
+    debug_label = tk.Label(left_frame, text="Debug Controls", font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e")
+    debug_label.pack(pady=(10, 5))
+    add_tooltip_to_label(debug_label, "Contrôles de débogage:\n• Step: Exécute une instruction\n• Continue: Reprend l'exécution\n• Stop: Arrête le processus")
 
     control_frame = tk.Frame(left_frame, bg="#1e1e1e")
     control_frame.pack(fill="x", padx=5)
 
     styled_button(control_frame, "Step", "#1b699d", on_step_button).pack(fill="x", pady=3)
+    styled_button(control_frame, "Step Over", "#d7ad59", on_step_over_button).pack(fill="x", pady=3)
     styled_button(control_frame, "Continue", "#1c904c", on_continue_button).pack(fill="x", pady=3)
     styled_button(control_frame, "Stop", "#b02010", on_stop_button).pack(fill="x", pady=3)
 
@@ -950,38 +1222,54 @@ def create_gui():
     center_frame = tk.Frame(main_frame, bd=2, relief="sunken", bg="#1e1e1e")
     center_frame.pack(side="left", fill="both", expand=True, padx=5, pady=5)
 
-    tk.Label(center_frame, text="Disassembly", font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e").pack(pady=(10, 0))
+    # Disassembly section
+    disasm_label = tk.Label(center_frame, text="Disassembly", font=("Segoe UI", 14, "bold"), fg="white", bg="#1e1e1e")
+    disasm_label.pack(pady=(10, 0))
+    add_tooltip_to_label(disasm_label, "Désassemblage:\n• Affiche les instructions à partir de RIP\n• Les appels de fonction sont annotés\n• S'arrête au premier 'ret'")
+    
     memory_view = tk.Text(center_frame, height=22, state="disabled", font=("Courier New", 9), bg="#2d2d2d", fg="white", insertbackground="white")
     memory_view.pack(fill="both", expand=True, pady=(5, 2), padx=5)
+    setup_disasm_colors(memory_view)
 
-    tk.Label(center_frame, text="HexView", font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e").pack(pady=(5, 0))
+    # HexView section
+    hex_label = tk.Label(center_frame, text="HexView", font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e")
+    hex_label.pack(pady=(5, 0))
+    add_tooltip_to_label(hex_label, "Vue hexadécimale:\n• Entrez une adresse dans le champ\n• Cliquez 'Search' pour naviguer\n• Format: adresse | hex | ASCII")
+    
     hex_view = tk.Text(center_frame, height=15, state="disabled", font=("Courier New", 9), bg="#2d2d2d", fg="white", insertbackground="white")
     hex_view.pack(fill="both", expand=True, pady=(2, 10), padx=5)
 
-    styled_button(center_frame, "Search", "#6d6d6d", on_search_hex_button).pack(fill="x", side='right')
     hx_frame = tk.Frame(center_frame, bg="#1e1e1e")
     hx_frame.pack(fill="x", pady=5, padx=5)
     hx_input = tk.Entry(hx_frame, bg="#2d2d2d", fg="white", relief="flat")
-    hx_input.pack(side="bottom", fill='x', expand=True, padx=(0, 5))
+    hx_input.pack(side="left", fill="x", expand=True, padx=(0, 5))
+    styled_button(hx_frame, "Search", "#6d6d6d", on_search_hex_button).pack(side='right')
 
     # Right panel
     right_frame = tk.Frame(main_frame, width=475, bd=2, relief="sunken", bg="#1e1e1e")
     right_frame.pack(side="left", fill="y", padx=5, pady=8)
     right_frame.pack_propagate(False)
 
-    def styled_label(parent, text):
-        return tk.Label(parent, text=text, font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e")
-
-    styled_label(right_frame, "Registers").pack(pady=(10, 0))
+    # Registers section
+    reg_label = tk.Label(right_frame, text="Registers", font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e")
+    reg_label.pack(pady=(10, 0))
+    add_tooltip_to_label(reg_label, "Registres:\nZones mémoire ultra-rapides du processeur.\n\n• RIP : adresse de la prochaine instruction\n• RSP : Pointeur vers le sommet de la pile.\n• RAX, RBX... : registres généraux\n• RSI, RDI : Utilisés pour passer des arguments\naux fonctions\n\nFLAGS : état (flags ZF, CF...)")
+    
     registers_view = tk.Text(right_frame, height=10, width=60, state="disabled", font=("Courier New", 9), bg="#2d2d2d", fg="white", insertbackground="white")
     registers_view.pack(fill="x", pady=5)
 
-    styled_label(right_frame, "Stack").pack(pady=(10, 0))
+    # Stack section
+    stack_label = tk.Label(right_frame, text="Stack", font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e")
+    stack_label.pack(pady=(10, 0))
+    add_tooltip_to_label(stack_label, "Pile d'exécution:\nStructure LIFO utilisée pour les appels de fonctions, variables locales et retours.\n\n• Contrôlée par RSP et RBP.\n• Gérée avec PUSH / POP.")
+    
     stack_view = tk.Text(right_frame, height=10, width=60, state="disabled", font=("Courier New", 9), bg="#2d2d2d", fg="white", insertbackground="white")
     stack_view.pack(fill="x", pady=5)
 
-    # Label pour la console debug
-    styled_label(right_frame, "Debug Console").pack(pady=(10, 0))
+    # Debug console section
+    console_label = tk.Label(right_frame, text="Debug Console", font=("Segoe UI", 10, "bold"), fg="white", bg="#1e1e1e")
+    console_label.pack(pady=(10, 0))
+    add_tooltip_to_label(console_label, "Console de débogage:\n• Messages d'état du debugger\n• Erreurs et confirmations\n• Log des événements de debug")
 
     # Frame pour la console
     console_frame = tk.Frame(right_frame, bg="#1e1e1e")
