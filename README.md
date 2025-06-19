@@ -7,8 +7,23 @@ Welcome to the documentation for your Windows Debugger. This tool allows you to 
 > ⚠️ **Note**: This debugger is designed to work with specific compiled files. Example binaries are available on the GitHub repository for testing and demonstration purposes.
 
 ## Installation
+
+You can clone the repository and then install dependencies :
+
 ```bash
 python3 -m pip install -r requirement.txt
+```
+
+Once every packages is installed, you can launch Edudbg using this command :
+
+```bash
+python3 ./edudbg
+```
+
+Or with our CLI version :
+
+```bash
+python3 ./edudbg ./file_to_debug
 ```
 
 ## User Interface
@@ -19,6 +34,8 @@ The debugger interface provides the following controls:
 
 - **Step Into Button**: Execute the program one instruction at a time.
 
+- **Step Over Button**: Execute the instructions but doesn't enter the functions.
+
 - **Continue Button**: Resume execution until the next breakpoint is hit.
 
 - **Breakpoint Address Input**: Enter the memory address where you want to set a breakpoint.
@@ -27,7 +44,7 @@ The debugger interface provides the following controls:
 
 > 🔹 **Breakpoint Limit**: You can set a maximum of four breakpoints at a time. Trying to add more will result in an error or ignore the additional request.
 
-![image](https://github.com/user-attachments/assets/82df87a4-3b3d-477c-87e6-fa286c07d253)
+![image](./screenshot_edudbg.png)
 
 ## Debugging Features
 
@@ -39,6 +56,4 @@ The debugger offers several core features to assist with low-level program analy
 
 - **Register Viewer**: Displays live CPU register values, allowing you to trace data flow and execution logic.
 
-## Example Files
-
-This debugger is built for use with specific compiled formats. For convenience, we’ve provided example files on the GitHub repository that are compatible with this tool. These samples are ideal for learning and testing your debugging workflow.
+- **Symbols View**: Displays symbols found inside the sections of the binary..
