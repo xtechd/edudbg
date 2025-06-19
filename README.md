@@ -2,7 +2,7 @@
 
 # Getting Started
 
-Welcome to the documentation for your Windows Debugger. This tool allows you to debug specific compiled executables at the instruction level using a clean and simple user interface.
+Welcome to the documentation of your favorite Windows Debugger. This tool allows you to debug specific compiled executables at the instruction level using a clean and simple user interface.
 
 > ⚠️ **Note**: This debugger is designed to work with specific compiled files. Example binaries are available on the GitHub repository for testing and demonstration purposes.
 
