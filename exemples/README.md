@@ -7,9 +7,16 @@ Chaque sous-dossier contient son propre fichier `README.md` qui explique le cont
 ---
 
 ## 📘 Contenu
+Cours:
+- [Cours 1 - Introduction à EduDbg](./Cours/Cours_1)
+- [Cours 2 - Registres & Disassembly](./Cours/Cours_2)
+- [Cours 3 - Appels de fonctions & pile](./Cours/Cours_3)
+- [Cours 4 - Breakpoints et exploration mémoire](./Cours/Cours_4)
+- [Cours 5 - Reverse simple](./Cours/Cours_5)
 
-- [1.Introduction - Découverte de Edudbg](./1.Introduction/)
-- [2.Mot de passe - Premier challenge](<./2.MotDePasse/>)
+Challenges :
+- [Challenge 1 - Introduction - Découverte de Edudbg](./Challs/1.Introduction/)
+- [Challenge 2 - Mot de passe - Premier challenge](<./Challs/2.MotDePasse/>)
 
 > ✏️ *Ce fichier sera mis à jour au fur et à mesure de l’ajout de nouveaux dossiers.*
 
